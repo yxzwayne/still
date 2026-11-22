@@ -12,29 +12,37 @@ struct BackendSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Form {
-                Section("New chats") {
+                Section {
                     Picker("Default model", selection: $settings.mode) {
                         Text("Inkling 2 Mini · on this Mac").tag(BackendMode.inkling)
                         Text("Gemma 4 12B · on this Mac").tag(BackendMode.gemma)
                         Text("Compatible server").tag(BackendMode.compatible)
                     }
+                } header: {
+                    Text("New chats").font(StillTypography.minimum.weight(.semibold))
                 }
-                Section("Compatible server") {
+                Section {
                     TextField("Name", text: $settings.displayName)
                     TextField("Base URL", text: $settings.baseURL).textContentType(.URL)
                     TextField("Model ID", text: $settings.model)
                     SecureField("API key (optional)", text: $apiKey)
-                    Text("Works with OpenAI-compatible chat servers, including llama.cpp and LM Studio. Messages go to the server you choose. Keys stay in Keychain.").font(.callout).foregroundStyle(.secondary)
+                    Text("Works with OpenAI-compatible chat servers, including llama.cpp and LM Studio. Messages go to the server you choose. Keys stay in Keychain.").foregroundStyle(.secondary)
                     Button(testing ? "Checking…" : "Test connection") { test() }.disabled(testing)
-                    if !status.isEmpty { Text(status).font(.callout) }
+                    if !status.isEmpty { Text(status) }
+                } header: {
+                    Text("Compatible server").font(StillTypography.minimum.weight(.semibold))
                 }
-                Section("Local runtime") {
+                Section {
                     LabeledContent("Status", value: store.runtime.status)
                     Button("Unload model") { store.runtime.unload() }.disabled(store.busy || !store.runtime.canUnload)
+                } header: {
+                    Text("Local runtime").font(StillTypography.minimum.weight(.semibold))
                 }
-                Section("Instructions for all chats") {
+                Section {
                     TextField("Instructions", text: $settings.systemPrompt, axis: .vertical).lineLimit(3...6)
-                    Text("Chats are saved on this Mac.").font(.callout).foregroundStyle(.secondary)
+                    Text("Chats are saved on this Mac.").foregroundStyle(.secondary)
+                } header: {
+                    Text("Instructions for all chats").font(StillTypography.minimum.weight(.semibold))
                 }
                 Section {
                     HStack {

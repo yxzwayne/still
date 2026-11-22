@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 
+enum StillTypography {
+    static let minimum = Font.system(size: 14)
+}
+
 @main struct StillApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var store = ChatStore()
@@ -10,6 +14,7 @@ import SwiftUI
     var body: some Scene {
         Window("Still", id: "main") {
             ChatWindow(store: store)
+                .font(StillTypography.minimum)
                 .onAppear { delegate.store = store }
                 .frame(minWidth: 700, minHeight: 500)
         }
@@ -27,7 +32,10 @@ import SwiftUI
 
             }
         }
-        Settings { BackendSettingsView(store: store) }
+        Settings {
+            BackendSettingsView(store: store)
+                .font(StillTypography.minimum)
+        }
     }
 }
 

@@ -27,8 +27,8 @@ struct ChatWindow: View {
             VStack(spacing: 0) {
                 if let issue = store.storageIssue {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Chats aren’t being saved").font(.headline)
-                        Text(issue).font(.callout).textSelection(.enabled)
+                        Text("Chats aren’t being saved").fontWeight(.semibold)
+                        Text(issue).textSelection(.enabled)
                         HStack {
                             Button("Show Library") { NSWorkspace.shared.activateFileViewerSelecting([store.storage.fileURL]) }
                             Button("Retry") { Task { await store.retryStorage() } }.disabled(!store.isRestored)
@@ -38,7 +38,7 @@ struct ChatWindow: View {
                 if let error = store.error {
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
-                        Text(error).font(.callout).textSelection(.enabled)
+                        Text(error).textSelection(.enabled)
                         Spacer()
                         Button { store.error = nil } label: {
                             Image(systemName: "xmark")
@@ -57,7 +57,7 @@ struct ChatWindow: View {
                         Spacer()
                         Button("Previous") { searchJump = hits[(index + hits.count - 1) % hits.count] }
                         Button("Next") { searchJump = hits[(index + 1) % hits.count] }
-                    }.font(.callout).padding(8).disabled(hits.count < 2)
+                    }.padding(8).disabled(hits.count < 2)
                 }
                 if let chat = store.selected, !chat.messages.isEmpty {
                     ChatTranscript(chat: chat, reply: store.activeReply, timing: store.lastReplyTiming,
@@ -96,7 +96,7 @@ struct ChatWindow: View {
         .onChange(of: store.newChatEvent) { closeSearch() }
         .sheet(isPresented: Binding(get: { renameID != nil }, set: { if !$0 { renameID = nil } })) {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Rename chat").font(.headline)
+                Text("Rename chat").fontWeight(.semibold)
                 TextField("Title", text: $renameText).textFieldStyle(.roundedBorder).onSubmit { commitRename() }
                 HStack { Spacer(); Button("Cancel") { renameID = nil }.keyboardShortcut(.cancelAction); Button("Save") { commitRename() }.keyboardShortcut(.defaultAction) }
             }.padding(24).frame(width: 360)
@@ -126,7 +126,6 @@ struct ChatWindow: View {
                                 .accessibilityHidden(true)
                             TextField("Search chats", text: $store.search)
                                 .textFieldStyle(.plain)
-                                .font(.callout)
                                 .focused($searchFocused)
                             Button { closeSearch() } label: {
                                 Image(systemName: "xmark.circle.fill")
@@ -198,7 +197,7 @@ struct ChatWindow: View {
                 }
                 .overlay {
                     if store.isRestored && !store.search.isEmpty && store.chats.isEmpty {
-                        Text("No matching chats").foregroundStyle(.secondary).font(.callout)
+                        Text("No matching chats").foregroundStyle(.secondary)
                     }
                 }
                 .onChange(of: store.state.conversations.count) { _, _ in
@@ -221,7 +220,7 @@ struct ChatWindow: View {
     private func sidebarLabel(_ title: LocalizedStringKey, symbol: String) -> some View {
         HStack(spacing: SidebarMetrics.iconSpacing) {
             sidebarIcon(symbol).accessibilityHidden(true)
-            Text(title).font(.callout)
+            Text(title)
         }
         .padding(.horizontal, SidebarMetrics.labelInset)
         .frame(maxWidth: .infinity, minHeight: SidebarMetrics.rowHeight, alignment: .leading)
@@ -317,9 +316,9 @@ private struct SidebarRow: View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(chat.title)
-                    .font(.callout.weight(isSelected ? .semibold : .regular))
+                    .fontWeight(isSelected ? .semibold : .regular)
                     .lineLimit(1)
-                if let excerpt { excerpt.font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                if let excerpt { excerpt.foregroundStyle(.secondary).lineLimit(1) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if generating { ProgressView().controlSize(.mini).accessibilityLabel("Replying") }
@@ -458,15 +457,15 @@ private struct ChatComposer: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if store.selected != nil && store.selected?.route == nil {
-                Text("Choose a model before sending to this saved chat.").font(.callout)
+                Text("Choose a model before sending to this saved chat.")
             }
             if store.selected?.route == .compatible && !store.routeReady {
                 HStack {
                     Text("Set up the server to send here.")
                     SettingsLink { Text("Open Settings") }
-                }.font(.callout)
+                }
             }
-            if store.draft.utf8.count > 48000 { Text("Shorten this message to 48,000 UTF-8 bytes to send.").font(.callout) }
+            if store.draft.utf8.count > 48000 { Text("Shorten this message to 48,000 UTF-8 bytes to send.") }
             if let reply = store.activeReply, !store.replyingHere {
                 Button { store.select(reply.conversationID) } label: {
                     Label("Send is paused · View the running reply", systemImage: "arrow.up.right")
@@ -474,7 +473,7 @@ private struct ChatComposer: View {
                         .frame(minHeight: InteractionMetrics.controlSize)
                 }
                 .buttonStyle(HoverButtonStyle())
-                .font(.caption).foregroundStyle(Color(nsColor: .linkColor)).padding(.leading, 3)
+                .foregroundStyle(Color(nsColor: .linkColor)).padding(.leading, 3)
             }
             VStack(alignment: .leading, spacing: 8) {
                 ComposerTextView(
@@ -550,7 +549,7 @@ private struct ModelChooser: View {
                 Text(route.map(label) ?? "Choose model").lineLimit(1)
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.down").font(.caption2)
-            }.font(.callout).padding(.horizontal, 8).frame(maxWidth: 240).frame(height: InteractionMetrics.controlSize)
+            }.padding(.horizontal, 8).frame(maxWidth: 240).frame(height: InteractionMetrics.controlSize)
         }
         .buttonStyle(HoverButtonStyle(shape: Capsule(), isSelected: open))
         .onChange(of: store.chooserEvent) { open.toggle() }
@@ -699,9 +698,9 @@ struct MessageView: View {
                             .accessibilityValue(reasoningExpanded ? "Expanded" : "Collapsed")
                         }
                     }
-                    .font(.caption).foregroundStyle(.secondary)
+                    .foregroundStyle(.secondary)
                     if reasoningExpanded, let reasoning = message.reasoning {
-                        Text(reasoning).font(.callout).foregroundStyle(.secondary)
+                        Text(reasoning).foregroundStyle(.secondary)
                             .textSelection(.enabled).padding(.leading, 12)
                             .overlay(alignment: .leading) {
                                 Rectangle().fill(.separator).frame(width: 1).allowsHitTesting(false)
@@ -711,7 +710,7 @@ struct MessageView: View {
                 }
                 .animation(reduceMotion ? nil : InteractionMotion.reveal, value: reasoningExpanded)
                 if message.text.isEmpty && message.status == .streaming {
-                    HStack(spacing: 8) { ProgressView().controlSize(.small); Text(phase).foregroundStyle(.secondary).font(.callout) }.padding(.vertical, 4)
+                    HStack(spacing: 8) { ProgressView().controlSize(.small); Text(phase).foregroundStyle(.secondary) }.padding(.vertical, 4)
                 } else if !message.text.isEmpty {
                     Group {
                         if searchHit != nil { searchableText }
@@ -728,7 +727,6 @@ struct MessageView: View {
                 }
                 if message.status != .streaming {
                     replyFooter
-                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -875,10 +873,10 @@ struct CodeBlock: View {
                 Spacer(minLength: 4)
                 CopyButton(text: code, title: "Copy code").fixedSize()
             }
-            .font(.system(size: 11)).foregroundStyle(.secondary)
+            .foregroundStyle(.secondary)
             .padding(.leading, 12).padding(.trailing, 8).padding(.vertical, 5)
             Divider().opacity(0.4)
-            ScrollView(.horizontal) { Text(code).font(.system(size: 13, design: .monospaced)).textSelection(.enabled).padding(14).frame(maxWidth: .infinity, alignment: .leading) }
+            ScrollView(.horizontal) { Text(code).monospaced().textSelection(.enabled).padding(14).frame(maxWidth: .infinity, alignment: .leading) }
             .scrollIndicators(.visible)
             .onScrollGeometryChange(for: Bool.self) { $0.contentSize.width > $0.containerSize.width + 1 } action: { _, value in overflows = value }
         }.background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.primary.opacity(0.06)))
