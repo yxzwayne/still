@@ -20,10 +20,11 @@ import SwiftUI
                 Button("New Chat") { store.newChat() }.keyboardShortcut("n").disabled(!store.isRestored)
             }
             CommandMenu("Chat") {
+                Button("Choose Model…") { store.chooserEvent = UUID() }
+                    .keyboardShortcut("m", modifiers: [.command, .shift]).disabled(!store.isRestored)
                 Button("Stop Reply") { store.stop() }.keyboardShortcut(".", modifiers: .command).disabled(!store.replyingHere)
-                Button("Retry Last Reply") { store.retry() }.keyboardShortcut("r", modifiers: [.command, .shift]).disabled(store.busy || store.selected?.messages.last?.role != .assistant)
-                Divider()
-                Button("Unload Local Model") { store.runtime.unload() }.disabled(store.busy)
+                Button("\(store.retryLabel) with \(store.nextSettings.label)") { store.retry() }.keyboardShortcut("r", modifiers: [.command, .shift]).disabled(!store.canRetry)
+
             }
         }
         Settings { BackendSettingsView(store: store) }

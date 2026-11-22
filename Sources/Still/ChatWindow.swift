@@ -12,18 +12,29 @@ struct ChatWindow: View {
     @State private var renameText = ""
     @State private var deleteID: UUID?
 
+    @State private var searchHits: [SearchJump] = []
     @State private var searchJump: SearchJump?
     @State private var searching = false
     @FocusState private var searchFocused: Bool
     @FocusState private var chatListFocused: Bool
     @FocusState private var focusedChatID: UUID?
-    @State private var composerHeight: CGFloat = 86
+
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columns) {
             sidebar.navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 320)
         } detail: {
             VStack(spacing: 0) {
+                if let issue = store.storageIssue {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Chats aren’t being saved").font(.headline)
+                        Text(issue).font(.callout).textSelection(.enabled)
+                        HStack {
+                            Button("Show Library") { NSWorkspace.shared.activateFileViewerSelecting([store.storage.fileURL]) }
+                            Button("Retry") { Task { await store.retryStorage() } }.disabled(!store.isRestored)
+                        }
+                    }.padding().frame(maxWidth: .infinity, alignment: .leading).background(.orange.opacity(0.1))
+                }
                 if let error = store.error {
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
@@ -38,49 +49,51 @@ struct ChatWindow: View {
                         .accessibilityLabel("Dismiss error")
                     }.padding(14).background(.orange.opacity(0.08))
                 }
+                if searching && !store.search.isEmpty {
+                    let hits = searchHits
+                    let index = hits.firstIndex { $0.message == searchJump?.message && $0.range == searchJump?.range } ?? 0
+                    HStack {
+                        Text(hits.isEmpty ? (store.selected?.title.localizedCaseInsensitiveContains(store.search) == true ? "Title match" : "No matches in this chat") : "Match \(index + 1) of \(hits.count)")
+                        Spacer()
+                        Button("Previous") { searchJump = hits[(index + hits.count - 1) % hits.count] }
+                        Button("Next") { searchJump = hits[(index + 1) % hits.count] }
+                    }.font(.callout).padding(8).disabled(hits.count < 2)
+                }
                 if let chat = store.selected, !chat.messages.isEmpty {
                     ChatTranscript(chat: chat, reply: store.activeReply, timing: store.lastReplyTiming,
-                                   retry: store.retry, composerHeight: composerHeight, searchJump: searchJump)
+                                   retry: store.retry, retryModel: store.nextSettings.label, retryAvailable: store.canRetry, searchJump: searchJump)
                         .id(chat.id)
-                        .overlay(alignment: .bottom) {
-                            ChatComposer(store: store)
-                                .padding(.bottom, 12)
-                                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
-                        }
                 } else {
-                    VStack(spacing: 18) {
-                        Text("What’s on your mind?")
+                    Text(store.isRestored ? "What’s on your mind?" : "Opening chats…")
                             .font(.system(size: 28, weight: .medium, design: .serif))
                             .accessibilityAddTraits(.isHeader)
-                        ChatComposer(store: store)
-                    }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                ChatComposer(store: store).padding(.vertical, 12)
             }
             .background(surface)
             .navigationTitle(store.selected?.messages.isEmpty == false ? (store.selected?.title ?? "") : "")
             .toolbarBackgroundVisibility(.automatic, for: .windowToolbar)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Menu {
-                        ChatModelMenuItems(store: store)
-                    } label: {
-                        HStack(spacing: 7) {
-                            Image(systemName: store.state.settings.localModel != nil ? "desktopcomputer" : "network")
-                            Text(store.state.settings.label).font(.callout).lineLimit(1)
-                        }
-                    }
-                    .disabled(!store.isRestored)
-                    .help("\(store.state.settings.label) · Select model and backend")
+                    Menu("Chat actions", systemImage: "ellipsis.circle") {
+                        Button("Rename…") { renameText = store.selected?.title ?? ""; renameID = store.state.selectedID }
+                        Button("Delete…", role: .destructive) { deleteID = store.state.selectedID }
+                    }.disabled(!store.isRestored || !store.writable)
                 }
             }
         }
         .tint(accent)
         .task { await store.restore() }
-        .onExitCommand {
-            if searching { closeSearch() }
-            else if store.replyingHere { store.stop() }
+        .onExitCommand { if searching { closeSearch() } }
+        .onChange(of: store.selected?.messages.last?.id) {
+            if !store.search.isEmpty, let id = store.state.selectedID { revealMatch(in: id) }
         }
+        .onChange(of: store.state.selectedID) {
+            if !store.search.isEmpty, let id = store.state.selectedID { revealMatch(in: id) }
+        }
+        .onChange(of: store.search) { if let id = store.state.selectedID { revealMatch(in: id) } }
+        .onChange(of: store.newChatEvent) { closeSearch() }
         .sheet(isPresented: Binding(get: { renameID != nil }, set: { if !$0 { renameID = nil } })) {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Rename chat").font(.headline)
@@ -88,36 +101,46 @@ struct ChatWindow: View {
                 HStack { Spacer(); Button("Cancel") { renameID = nil }.keyboardShortcut(.cancelAction); Button("Save") { commitRename() }.keyboardShortcut(.defaultAction) }
             }.padding(24).frame(width: 360)
         }
-        .alert("Delete this chat?", isPresented: Binding(get: { deleteID != nil }, set: { if !$0 { deleteID = nil } })) {
+        .alert("Delete “\(store.state.conversations.first { $0.id == deleteID }?.title ?? "chat")”?", isPresented: Binding(get: { deleteID != nil }, set: { if !$0 { deleteID = nil } })) {
             Button("Cancel", role: .cancel) { deleteID = nil }
             Button("Delete", role: .destructive) { if let id = deleteID { store.delete(id) }; deleteID = nil }
         } message: { Text("This removes the conversation from this Mac.") }
     }
 
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             Text("Still").font(.title2.weight(.semibold))
                 .padding(.horizontal, SidebarMetrics.inset + SidebarMetrics.labelInset)
                 .padding(.bottom, 6)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
                 Button { closeSearch(); store.newChat() } label: {
                     sidebarLabel("New Chat", symbol: "square.and.pencil")
                 }
+                .buttonStyle(HoverButtonStyle(shape: Capsule()))
                 .help("New chat (⌘N)")
                 Group {
                     if searching {
-                        HStack(spacing: 4) {
+                        HStack(spacing: SidebarMetrics.iconSpacing) {
+                            sidebarIcon("magnifyingglass")
+                                .foregroundStyle(.secondary)
+                                .accessibilityHidden(true)
                             TextField("Search chats", text: $store.search)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.plain)
+                                .font(.callout)
                                 .focused($searchFocused)
                             Button { closeSearch() } label: {
-                                Image(systemName: "xmark")
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.secondary)
                                     .frame(width: InteractionMetrics.controlSize, height: InteractionMetrics.controlSize)
                             }
+                            .buttonStyle(HoverButtonStyle(shape: Circle()))
                             .help("Close search")
                             .accessibilityLabel("Close search")
                         }
                         .padding(.leading, SidebarMetrics.labelInset)
+                        .padding(.trailing, 3)
+                        .frame(height: SidebarMetrics.rowHeight)
                         .task {
                             await Task.yield()
                             if searching { searchFocused = true }
@@ -125,30 +148,32 @@ struct ChatWindow: View {
                     } else {
                         Button { searching = true } label: {
                             sidebarLabel("Search", symbol: "magnifyingglass")
+                                .foregroundStyle(.secondary)
                         }
+                        .buttonStyle(HoverButtonStyle(shape: Capsule()))
                         .keyboardShortcut("f")
                     }
                 }
-                .frame(height: InteractionMetrics.controlSize)
+                .modifier(ChatGlass(shape: Capsule()))
             }
-            .buttonStyle(HoverButtonStyle())
             .padding(.horizontal, SidebarMetrics.inset)
-            .padding(.bottom, 8)
+            .padding(.bottom, 4)
 
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 2) {
                         ForEach(store.chats) { chat in
+                            let isSelected = store.state.selectedID == chat.id
                             Button {
                                 store.select(chat.id)
                                 revealMatch(in: chat.id)
                             } label: {
-                                SidebarRow(chat: chat, search: store.search,
+                                SidebarRow(chat: chat, search: store.search, isSelected: isSelected,
                                            generating: store.activeReply?.conversationID == chat.id)
                             }
-                            .buttonStyle(HoverButtonStyle(shape: SidebarMetrics.chatRowShape,
-                                                          isSelected: store.state.selectedID == chat.id))
-                            .accessibilityAddTraits(store.state.selectedID == chat.id ? .isSelected : [])
+                            .buttonStyle(HoverButtonStyle(shape: Capsule()))
+                            .modifier(ChatGlass(shape: Capsule(), tint: accent.opacity(0.18), isVisible: isSelected))
+                            .accessibilityAddTraits(isSelected ? .isSelected : [])
                             .focused($focusedChatID, equals: chat.id)
                             .id(chat.id)
                             .contextMenu {
@@ -162,6 +187,7 @@ struct ChatWindow: View {
                 }
                 .accessibilityLabel("Chats")
                 .focusable(interactions: .edit)
+                .focusEffectDisabled()
                 .focused($chatListFocused)
                 .onMoveCommand { direction in
                     guard let id = adjacentChatID(in: direction) else { return }
@@ -183,23 +209,28 @@ struct ChatWindow: View {
             SettingsLink {
                 sidebarLabel("Settings", symbol: "gearshape")
             }
-            .buttonStyle(HoverButtonStyle())
+            .buttonStyle(HoverButtonStyle(shape: Capsule()))
             .foregroundStyle(.secondary)
             .padding(.horizontal, SidebarMetrics.inset)
             .padding(.bottom, 16)
         }
-        .disabled(!store.isRestored)
+        .disabled(!store.isRestored || !store.writable)
         .navigationTitle("Still")
     }
 
     private func sidebarLabel(_ title: LocalizedStringKey, symbol: String) -> some View {
-        Label {
-            Text(title)
-        } icon: {
-            Image(systemName: symbol).frame(width: 18)
+        HStack(spacing: SidebarMetrics.iconSpacing) {
+            sidebarIcon(symbol).accessibilityHidden(true)
+            Text(title).font(.callout)
         }
-        .frame(maxWidth: .infinity, minHeight: InteractionMetrics.controlSize, alignment: .leading)
         .padding(.horizontal, SidebarMetrics.labelInset)
+        .frame(maxWidth: .infinity, minHeight: SidebarMetrics.rowHeight, alignment: .leading)
+    }
+
+    private func sidebarIcon(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 13, weight: .medium))
+            .frame(width: 18)
     }
 
     private func adjacentChatID(in direction: MoveCommandDirection) -> UUID? {
@@ -218,17 +249,27 @@ struct ChatWindow: View {
         }
     }
 
-    private func revealMatch(in id: UUID) {
-        guard !store.search.isEmpty,
-              let chat = store.chats.first(where: { $0.id == id }),
-              let message = chat.messages.last(where: { $0.text.localizedCaseInsensitiveContains(store.search) }) else {
-            searchJump = nil
-            return
+    private var matches: [SearchJump] {
+        guard let chat = store.selected, !store.search.isEmpty else { return [] }
+        return chat.messages.flatMap { message in
+            var hits: [SearchJump] = []
+            var start = message.text.startIndex
+            while start < message.text.endIndex, let range = message.text.range(of: store.search, options: .caseInsensitive, range: start..<message.text.endIndex, locale: .current), range.upperBound > start {
+                hits.append(SearchJump(conversation: chat.id, message: message.id, range: range))
+                start = range.upperBound
+            }
+            return hits
         }
-        searchJump = SearchJump(conversation: id, message: message.id)
+    }
+
+    private func revealMatch(in id: UUID) {
+        guard id == store.state.selectedID else { return }
+        searchHits = matches
+        searchJump = searchHits.first
     }
 
     private func closeSearch() {
+        searchHits = []
         searchJump = nil
         store.search = ""
         searching = false
@@ -239,25 +280,28 @@ struct ChatWindow: View {
     private func commitRename() {
         if let id = renameID { store.rename(id, to: renameText) }
         renameID = nil
+        store.focusComposer()
     }
 }
 
 private enum SidebarMetrics {
     static let inset: CGFloat = 10
-    static let labelInset: CGFloat = 6
-    static let chatRowHeight: CGFloat = 32
-    static let chatRowShape = RoundedRectangle(cornerRadius: 8)
+    static let labelInset: CGFloat = 10
+    static let iconSpacing: CGFloat = 7
+    static let rowHeight: CGFloat = 32
 }
 
 private struct SidebarRow: View {
     let chat: Conversation
     let search: String
+    let isSelected: Bool
     let generating: Bool
 
     private var excerpt: Text? {
         guard !search.isEmpty, !chat.title.localizedCaseInsensitiveContains(search) else { return nil }
         for message in chat.messages.reversed() {
-            let text = message.text.replacingOccurrences(of: "\n", with: " ")
+            let source = message.text.replacingOccurrences(of: "\n", with: " ")
+            let text = (try? AttributedString(markdown: source)).map { String($0.characters) } ?? source
             if let range = text.range(of: search, options: [.caseInsensitive], locale: .current) {
                 let start = text.index(range.lowerBound, offsetBy: -12, limitedBy: text.startIndex) ?? text.startIndex
                 let prefix = (start == text.startIndex ? "" : "…") + text[start..<range.lowerBound]
@@ -270,17 +314,20 @@ private struct SidebarRow: View {
     }
 
     var body: some View {
-        HStack {
+        HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(chat.title).lineLimit(1)
+                Text(chat.title)
+                    .font(.callout.weight(isSelected ? .semibold : .regular))
+                    .lineLimit(1)
                 if let excerpt { excerpt.font(.caption).foregroundStyle(.secondary).lineLimit(1) }
             }
-            if generating { Spacer(); ProgressView().controlSize(.mini).accessibilityLabel("Replying") }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if generating { ProgressView().controlSize(.mini).accessibilityLabel("Replying") }
         }
         .help(chat.title)
         .padding(.horizontal, SidebarMetrics.labelInset)
         .padding(.vertical, 3)
-        .frame(maxWidth: .infinity, minHeight: SidebarMetrics.chatRowHeight, alignment: .leading)
+        .frame(minHeight: SidebarMetrics.rowHeight)
     }
 }
 
@@ -288,6 +335,12 @@ private struct SearchJump: Identifiable {
     let id = UUID()
     let conversation: UUID
     let message: UUID
+    let range: Range<String.Index>
+}
+
+private extension EnvironmentValues {
+    @Entry var retryModelName = ""
+    @Entry var activeSearchHit: SearchJump? = nil
 }
 
 private struct ChatTranscript: View {
@@ -295,7 +348,8 @@ private struct ChatTranscript: View {
     let reply: LiveReply?
     let timing: ReplyTiming?
     let retry: () -> Void
-    let composerHeight: CGFloat
+    let retryModel: String
+    let retryAvailable: Bool
     let searchJump: SearchJump?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var following = true
@@ -311,13 +365,14 @@ private struct ChatTranscript: View {
                             reply: reply?.timing.id == message.id ? reply : nil,
                             timing: timing?.id == message.id ? timing : nil,
                             retry: retry,
-                            canRetry: reply == nil && message.id == chat.messages.last?.id
+                            canRetry: retryAvailable && message.id == chat.messages.last?.id
                         )
+                        .environment(\.retryModelName, retryModel)
+                        .environment(\.activeSearchHit, searchJump?.message == message.id ? searchJump : nil)
                         .id(message.id)
                     }
-                    Color.clear.frame(height: composerHeight).id("latest").accessibilityHidden(true)
+                    Color.clear.frame(height: 8).id("latest").accessibilityHidden(true)
                 }
-                .padding(.horizontal, 16)
                 .frame(maxWidth: 696)
                 .padding(.horizontal, 24)
                 .frame(maxWidth: .infinity)
@@ -329,6 +384,9 @@ private struct ChatTranscript: View {
                 guard let searchJump, searchJump.conversation == chat.id else { return }
                 following = false
                 proxy.scrollTo(searchJump.message, anchor: .top)
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                proxy.scrollTo(searchJump.id, anchor: .center)
             }
             .onScrollPhaseChange { oldPhase, newPhase, context in
                 if isUserScrolling(oldPhase) || isUserScrolling(newPhase) {
@@ -343,7 +401,7 @@ private struct ChatTranscript: View {
                 if following && !isUserScrolling(scrollPhase) { proxy.scrollTo("latest", anchor: .bottom) }
             }
             .onChange(of: chat.messages.last?.id) { _, _ in
-                following = true
+                guard following else { return }
                 proxy.scrollTo("latest", anchor: .bottom)
             }
             .overlay(alignment: .bottomTrailing) {
@@ -364,8 +422,7 @@ private struct ChatTranscript: View {
                         .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.97)))
                     }
                 }
-                .animation(InteractionMotion.reveal, value: following)
-                .padding(.bottom, composerHeight)
+                .animation(reduceMotion ? nil : InteractionMotion.reveal, value: following)
                 .padding(18)
             }
         }
@@ -400,9 +457,19 @@ private struct ChatComposer: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if store.selected != nil && store.selected?.route == nil {
+                Text("Choose a model before sending to this saved chat.").font(.callout)
+            }
+            if store.selected?.route == .compatible && !store.routeReady {
+                HStack {
+                    Text("Set up the server to send here.")
+                    SettingsLink { Text("Open Settings") }
+                }.font(.callout)
+            }
+            if store.draft.utf8.count > 48000 { Text("Shorten this message to 48,000 UTF-8 bytes to send.").font(.callout) }
             if let reply = store.activeReply, !store.replyingHere {
                 Button { store.select(reply.conversationID) } label: {
-                    Label("View chat generating a reply", systemImage: "arrow.up.right")
+                    Label("Send is paused · View the running reply", systemImage: "arrow.up.right")
                         .padding(.horizontal, 6)
                         .frame(minHeight: InteractionMetrics.controlSize)
                 }
@@ -420,26 +487,7 @@ private struct ChatComposer: View {
 
                 HStack(spacing: 8) {
                     Spacer(minLength: 0)
-                    Menu {
-                        ChatModelMenuItems(store: store)
-                    } label: {
-                        Text(store.state.settings.label)
-                            .font(.callout)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .padding(.horizontal, 8)
-                            .frame(height: InteractionMetrics.controlSize)
-                    }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.visible)
-                    .tint(.primary)
-                    .modifier(HoverHighlight(shape: Capsule()))
-                    .contentShape(.focusEffect, Capsule())
-                    .disabled(!store.isRestored)
-                    .help("Select model · \(store.state.settings.label)")
-                    .accessibilityLabel("Select model")
-                    .accessibilityValue(store.state.settings.label)
-
+                    ModelChooser(store: store)
                     sendButton
                         .layoutPriority(1)
                 }
@@ -482,23 +530,84 @@ private struct ChatComposer: View {
     }
 }
 
-private struct ChatModelMenuItems: View {
+private struct ModelChooser: View {
     let store: ChatStore
+    @State private var open = false
+    @State private var keyMonitor: Any?
+    @State private var cursor: BackendMode?
+    @FocusState private var focused: BackendMode?
+    @FocusState private var triggerFocused: Bool
+    private var route: BackendMode? { store.selected?.route }
+    private func label(_ mode: BackendMode) -> String {
+        var settings = store.state.settings
+        settings.mode = mode
+        return (mode == .compatible ? "Server" : "On this Mac") + " · " + settings.label
+    }
 
     var body: some View {
-        ForEach(LocalModel.allCases) { model in
-            Button { store.selectModel(model) } label: {
-                if store.state.settings.localModel == model { Label(model.title, systemImage: "checkmark") }
-                else { Text(model.title) }
-            }.disabled(store.busy)
+        Button { open.toggle() } label: {
+            HStack(spacing: 5) {
+                Text(route.map(label) ?? "Choose model").lineLimit(1)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.down").font(.caption2)
+            }.font(.callout).padding(.horizontal, 8).frame(maxWidth: 240).frame(height: InteractionMetrics.controlSize)
         }
-        if store.state.settings.localModel != nil {
-            Divider()
-            Text(store.runtime.status)
-            Button("Unload Model") { store.runtime.unload() }.disabled(store.busy)
+        .buttonStyle(HoverButtonStyle(shape: Capsule(), isSelected: open))
+        .onChange(of: store.chooserEvent) { open.toggle() }
+        .focused($triggerFocused)
+        .disabled(!store.isRestored)
+        .help("Choose the model for the next message (⇧⌘M)")
+        .popover(isPresented: $open) {
+            VStack(spacing: 2) {
+                ForEach(BackendMode.allCases, id: \.self) { mode in
+                    Button { store.selectRoute(mode); open = false } label: {
+                        HStack {
+                            Text(label(mode)).lineLimit(1)
+                            Spacer()
+                            if route == mode { Image(systemName: "checkmark") }
+                        }.padding(.horizontal, 8).frame(height: 32)
+                    }
+                    .buttonStyle(HoverButtonStyle(shape: RoundedRectangle(cornerRadius: 6), isSelected: route == mode))
+                    .overlay {
+                        if cursor == mode { RoundedRectangle(cornerRadius: 6).strokeBorder(Color.accentColor, lineWidth: 2).allowsHitTesting(false) }
+                    }
+                    .focusable(interactions: .edit)
+                    .focused($focused, equals: mode)
+                    .accessibilityAddTraits(route == mode ? .isSelected : [])
+                }
+            }.padding(6).frame(width: 250)
+            .onAppear {
+                focused = route ?? .inkling
+                cursor = nil
+                keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                    guard open, event.modifierFlags.intersection([.command, .option, .control]).isEmpty else { return event }
+                    let modes = BackendMode.allCases
+                    let index = modes.firstIndex(of: cursor ?? focused ?? route ?? .inkling) ?? 0
+                    switch event.keyCode {
+                    case 125, 126:
+                        let offset = event.keyCode == 125 ? 1 : modes.count - 1
+                        cursor = modes[(index + offset) % modes.count]
+                        focused = cursor
+                    case 36, 76:
+                        store.selectRoute(modes[index])
+                        open = false
+                    case 53:
+                        open = false
+                    default:
+                        return event
+                    }
+                    return nil
+                }
+            }
+            .onChange(of: focused) { if cursor != nil { cursor = focused } }
+            .onDisappear {
+                if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+                keyMonitor = nil
+            }
+            .onExitCommand { open = false }
         }
-        Divider()
-        SettingsLink { Text("Backend Settings…") }
+        .onChange(of: open) { if !open { triggerFocused = true } }
+        .onChange(of: store.state.selectedID) { open = false }
     }
 }
 
@@ -514,9 +623,16 @@ private struct TranscriptEdge: ViewModifier {
 
 private struct ChatGlass<S: Shape>: ViewModifier {
     let shape: S
+    var tint: Color? = nil
+    var isVisible = true
+
     func body(content: Content) -> some View {
-        if #available(macOS 26, *) {
-            content.glassEffect(.regular, in: shape)
+        if !isVisible {
+            content
+        } else if #available(macOS 26, *) {
+            content.glassEffect(tint.map { Glass.regular.tint($0) } ?? .regular, in: shape)
+        } else if let tint {
+            content.background(tint, in: shape)
         } else {
             content.background(.regularMaterial, in: shape)
         }
@@ -530,11 +646,38 @@ struct MessageView: View {
     let canRetry: Bool
     let timing: ReplyTiming?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.retryModelName) private var retryModel
+    @Environment(\.activeSearchHit) private var searchHit
+    @ViewBuilder private var searchableText: some View {
+        if let hit = searchHit, hit.message == message.id,
+           hit.range.upperBound <= message.text.endIndex {
+            let text = message.text
+            let lineStart = text[..<hit.range.lowerBound].lastIndex(of: "\n").map { text.index(after: $0) } ?? text.startIndex
+            let lineEnd = text[hit.range.upperBound...].firstIndex(of: "\n") ?? text.endIndex
+            VStack(alignment: .leading, spacing: 0) {
+                if lineStart > text.startIndex {
+                    Text(String(text[..<text.index(before: lineStart)]))
+                }
+                Text(AttributedString(String(text[lineStart..<hit.range.lowerBound])) +
+                     highlight(String(text[hit.range])) +
+                     AttributedString(String(text[hit.range.upperBound..<lineEnd])))
+                    .id(hit.id)
+                if lineEnd < text.endIndex { Text(String(text[text.index(after: lineEnd)...])) }
+            }.textSelection(.enabled)
+        } else { Text(message.text) }
+    }
+
+    private func highlight(_ text: String) -> AttributedString {
+        var match = AttributedString(text)
+        match.backgroundColor = .yellow
+        match.foregroundColor = .black
+        return match
+    }
     @State private var reasoningExpanded = false
     var body: some View {
         VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 10) {
             if message.role == .user {
-                Text(message.text).font(.system(size: 15)).textSelection(.enabled).lineSpacing(4)
+                searchableText.font(.system(size: 15)).textSelection(.enabled).lineSpacing(4)
                     .padding(.horizontal, 17).padding(.vertical, 13).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 17))
                     .frame(maxWidth: 580, alignment: .trailing).frame(maxWidth: .infinity, alignment: .trailing)
             } else {
@@ -570,7 +713,10 @@ struct MessageView: View {
                 if message.text.isEmpty && message.status == .streaming {
                     HStack(spacing: 8) { ProgressView().controlSize(.small); Text(phase).foregroundStyle(.secondary).font(.callout) }.padding(.vertical, 4)
                 } else if !message.text.isEmpty {
-                    MarkdownContent(text: message.text).equatable()
+                    Group {
+                        if searchHit != nil { searchableText }
+                        else { MarkdownContent(text: message.text).equatable() }
+                    }
                         .overlay(alignment: .topLeading) {
                             if UITiming.enabled, let timing, message.text.contains(where: { !$0.isWhitespace }) {
                                 AnswerDrawMarker(timing: timing)
@@ -609,11 +755,11 @@ struct MessageView: View {
             if !message.text.isEmpty { CopyButton(text: message.text, title: "Copy response") }
             if canRetry {
                 Button(action: retry) {
-                    Label("Retry last reply", systemImage: "arrow.clockwise").labelStyle(.iconOnly)
-                        .frame(width: InteractionMetrics.controlSize, height: InteractionMetrics.controlSize)
+                    Text(message.status == .complete ? "Regenerate" : "Retry").padding(.horizontal, 6)
+                        .frame(height: InteractionMetrics.controlSize)
                 }
                 .buttonStyle(HoverButtonStyle())
-                .help("Retry last reply")
+                .help("\(message.status == .complete ? "Regenerate" : "Retry") with \(retryModel)")
             }
         }
     }
@@ -636,12 +782,28 @@ struct MarkdownContent: View, Equatable {
 
 struct FormattedProse: View {
     let text: String
-    private struct Block { var text: String; var level = 0; var marker: String?; var quote = false; var indent = 0 }
+    private struct Block { var text: String; var level = 0; var marker: String?; var quote = false; var indent = 0; var table: [String]? }
     private var blocks: [Block] {
         var result: [Block] = []
         var paragraph: [String] = []
         func flush() { if !paragraph.isEmpty { result.append(Block(text: paragraph.joined(separator: "\n"))); paragraph.removeAll() } }
-        for line in text.components(separatedBy: "\n") {
+        let lines = text.components(separatedBy: "\n")
+        var index = 0
+        while index < lines.count {
+            let line = lines[index]
+            index += 1
+            if line.contains("|"), index < lines.count, lines[index].contains("-"),
+               lines[index].contains("|"), lines[index].allSatisfy({ "|:- ".contains($0) }) {
+                flush()
+                var rows = [line]
+                index += 1
+                while index < lines.count && lines[index].contains("|") {
+                    rows.append(lines[index])
+                    index += 1
+                }
+                result.append(Block(text: "", table: rows))
+                continue
+            }
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty { flush(); continue }
             let indent = line.prefix(while: { $0 == " " || $0 == "\t" }).reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
@@ -653,7 +815,9 @@ struct FormattedProse: View {
             } else if let range = trimmed.range(of: #"^\d+[.)]\s+"#, options: .regularExpression) {
                 flush(); result.append(Block(text: String(trimmed[range.upperBound...]), marker: String(trimmed[range]).trimmingCharacters(in: .whitespaces), indent: indent))
             } else if trimmed.hasPrefix("> ") {
-                flush(); result.append(Block(text: String(trimmed.dropFirst(2)), quote: true))
+                flush()
+                if let last = result.indices.last, result[last].quote { result[last].text += "\n" + trimmed.dropFirst(2) }
+                else { result.append(Block(text: String(trimmed.dropFirst(2)), quote: true)) }
             } else if indent > 0, paragraph.isEmpty, let last = result.indices.last,
                       result[last].marker != nil, indent > result[last].indent {
                 result[last].text += "\n" + trimmed
@@ -664,15 +828,31 @@ struct FormattedProse: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                if let rows = block.table {
+                    ScrollView(.horizontal) {
+                        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
+                            ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                                GridRow {
+                                    ForEach(Array(row.trimmingCharacters(in: CharacterSet(charactersIn: " |")).components(separatedBy: "|").enumerated()), id: \.offset) { _, cell in
+                                        Text(.init(cell.trimmingCharacters(in: .whitespaces)) as LocalizedStringKey)
+                                            .fontWeight(index == 0 ? .semibold : .regular)
+                                    }
+                                }
+                            }
+                        }.textSelection(.enabled).padding(8)
+                    }.scrollIndicators(.visible)
+                } else {
                 HStack(alignment: .top, spacing: 10) {
                     if let marker = block.marker { Text(marker).foregroundStyle(.secondary).frame(minWidth: 15, alignment: .leading) }
                     if block.quote { RoundedRectangle(cornerRadius: 1).fill(.secondary.opacity(0.3)).frame(width: 3) }
                     Text((try? AttributedString(markdown: block.text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(block.text))
+                        .accessibilityAddTraits(block.level > 0 ? .isHeader : [])
                         .font(.system(size: block.level == 1 ? 21 : block.level == 2 ? 18 : block.level > 0 ? 16 : 15, weight: block.level > 0 ? .semibold : .regular))
                         .foregroundStyle(block.quote ? Color.secondary : Color.primary)
                         .lineSpacing(5).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                 }.padding(.leading, CGFloat(min(block.indent, 24)) * 6)
                 .fixedSize(horizontal: false, vertical: true).padding(.top, block.level > 0 ? 7 : 0)
+                }
             }
         }
     }
@@ -680,12 +860,18 @@ struct FormattedProse: View {
 
 struct CodeBlock: View {
     let text: String
+    @State private var overflows = false
     var language: String { text.components(separatedBy: "\n").first ?? "" }
     var code: String { text.contains("\n") ? String(text.dropFirst(language.count + 1)).trimmingCharacters(in: .newlines) : text }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text(language.isEmpty ? "Code" : language)
+                if overflows {
+                    Image(systemName: "arrow.left.and.right")
+                        .help("Scroll horizontally to read the full line")
+                        .accessibilityLabel("Code scrolls horizontally")
+                }
                 Spacer(minLength: 4)
                 CopyButton(text: code, title: "Copy code").fixedSize()
             }
@@ -693,6 +879,8 @@ struct CodeBlock: View {
             .padding(.leading, 12).padding(.trailing, 8).padding(.vertical, 5)
             Divider().opacity(0.4)
             ScrollView(.horizontal) { Text(code).font(.system(size: 13, design: .monospaced)).textSelection(.enabled).padding(14).frame(maxWidth: .infinity, alignment: .leading) }
+            .scrollIndicators(.visible)
+            .onScrollGeometryChange(for: Bool.self) { $0.contentSize.width > $0.containerSize.width + 1 } action: { _, value in overflows = value }
         }.background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.primary.opacity(0.06)))
     }
 }

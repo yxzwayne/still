@@ -6,30 +6,33 @@ struct BackendSettingsView: View {
     let store: ChatStore
     @State private var settings = BackendSettings()
     @State private var apiKey = ""
+    @State private var originalKey = ""
     @State private var status = ""
     @State private var testing = false
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Form {
-                Section("Backend") {
-                    Picker("Run with", selection: $settings.mode) {
+                Section("New chats") {
+                    Picker("Default model", selection: $settings.mode) {
                         Text("Inkling 2 Mini · on this Mac").tag(BackendMode.inkling)
                         Text("Gemma 4 12B · on this Mac").tag(BackendMode.gemma)
                         Text("Compatible server").tag(BackendMode.compatible)
                     }
-                    if let local = settings.localModel {
-                        LabeledContent("Model", value: "\(local.title) · 4-bit MLX")
-                        Text("Starts when you send a message. Unloads after five minutes idle or when Still quits.").font(.callout).foregroundStyle(.secondary)
-                        Button("Unload model now") { store.runtime.unload() }.disabled(store.busy)
-                    } else {
-                        TextField("Name", text: $settings.displayName)
-                        TextField("Base URL", text: $settings.baseURL).textContentType(.URL)
-                        TextField("Model ID", text: $settings.model)
-                        SecureField("API key (optional)", text: $apiKey)
-                        Text("Works with OpenAI-compatible chat servers, including llama.cpp and LM Studio. Messages go to the server you choose. Keys stay in Keychain.").font(.callout).foregroundStyle(.secondary)
-                    }
                 }
-                Section("Conversation") {
+                Section("Compatible server") {
+                    TextField("Name", text: $settings.displayName)
+                    TextField("Base URL", text: $settings.baseURL).textContentType(.URL)
+                    TextField("Model ID", text: $settings.model)
+                    SecureField("API key (optional)", text: $apiKey)
+                    Text("Works with OpenAI-compatible chat servers, including llama.cpp and LM Studio. Messages go to the server you choose. Keys stay in Keychain.").font(.callout).foregroundStyle(.secondary)
+                    Button(testing ? "Checking…" : "Test connection") { test() }.disabled(testing)
+                    if !status.isEmpty { Text(status).font(.callout) }
+                }
+                Section("Local runtime") {
+                    LabeledContent("Status", value: store.runtime.status)
+                    Button("Unload model") { store.runtime.unload() }.disabled(store.busy || !store.runtime.canUnload)
+                }
+                Section("Instructions for all chats") {
                     TextField("Instructions", text: $settings.systemPrompt, axis: .vertical).lineLimit(3...6)
                     Text("Chats are saved on this Mac.").font(.callout).foregroundStyle(.secondary)
                 }
@@ -41,25 +44,28 @@ struct BackendSettingsView: View {
                         }
                     }
                 }
-            }.formStyle(.grouped)
+            }.formStyle(.grouped).disabled(testing)
             HStack {
-                Text(status).font(.callout).foregroundStyle(.secondary).lineLimit(3)
                 Spacer()
-                if settings.mode == .compatible { Button(testing ? "Checking…" : "Test connection") { test() }.disabled(testing) }
                 Button("Save") {
-                    do { try store.saveSettings(settings, apiKey: apiKey); status = "Saved" }
+                    do { try store.saveSettings(settings, apiKey: originalKey == apiKey ? nil : apiKey); originalKey = apiKey; status = "Saved" }
                     catch { status = error.localizedDescription }
-                }.keyboardShortcut(.defaultAction).disabled(store.busy || !store.isRestored)
+                }.keyboardShortcut(.defaultAction).disabled(!store.writable || !store.isRestored || testing)
             }.padding(20)
-        }.frame(width: 550, height: settings.localModel != nil ? 470 : 600)
+        }.frame(width: 550, height: 620)
             .onAppear { settings = store.state.settings; loadKey() }
             .onChange(of: store.isRestored) { _, ready in
                 if ready { settings = store.state.settings; loadKey() }
             }
-            .onChange(of: settings.baseURL) { _, _ in apiKey = ""; status = "" }
-            .onChange(of: settings.mode) { _, _ in loadKey(); status = "" }
+            .onChange(of: settings.baseURL) { _, _ in loadKey(); status = "" }
+            .onChange(of: settings.model) { _, _ in status = "" }
     }
-    private func loadKey() { if let url = try? settings.validatedEndpoint() { apiKey = Keychain.read(account: url.absoluteString) } }
+    private func loadKey() {
+        var connection = settings
+        connection.model = "key lookup"
+        originalKey = (try? connection.validatedEndpoint()).map { Keychain.read(account: $0.absoluteString) } ?? ""
+        apiKey = originalKey
+    }
     private func test() {
         testing = true; status = ""
         Task {

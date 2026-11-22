@@ -5,9 +5,23 @@ public struct ChatStorage: Sendable {
     public init(directory: URL) { self.directory = directory }
     public var fileURL: URL { directory.appendingPathComponent("chats.json") }
     public func load() throws -> SavedState {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return SavedState() }
-        var state = try JSONDecoder().decode(SavedState.self, from: Data(contentsOf: fileURL))
-        guard state.version == 1 else { throw ChatError.message("This chat library was written by a newer version of Still.") }
+        let data: Data
+        do { data = try Data(contentsOf: fileURL) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return SavedState() }
+        struct Header: Decodable { let version: Int }
+        let version = try JSONDecoder().decode(Header.self, from: data).version
+        guard (1...2).contains(version) else { throw ChatError.message("This chat library was written by a newer version of Still.") }
+        var state = try JSONDecoder().decode(SavedState.self, from: data)
+        state.version = 2
+        for index in state.conversations.indices where state.conversations[index].route == nil {
+            let chat = state.conversations[index]
+            if let local = chat.localModel {
+                state.conversations[index].route = local.mode
+            } else if let author = chat.messages.last(where: { $0.role == .assistant })?.model,
+                      !LocalModel.allCases.contains(where: { $0.title == author }) {
+                state.conversations[index].route = .compatible
+            }
+        }
         state.recoverInterruptedReplies()
         return state
     }

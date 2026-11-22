@@ -7,6 +7,8 @@ import StillCore
     let conversationID: UUID
     let timing: ReplyTiming
     var message: Message
+    var usesLocalRuntime = false
+    var replacing = false
     var phase = "Connecting…"
 
     init(conversationID: UUID, message: Message, started: ContinuousClock.Instant) {
@@ -29,7 +31,26 @@ import StillCore
     let storage: ChatStorage
     @ObservationIgnored private var generation: Task<Void, Never>?
     @ObservationIgnored private var saveTask: Task<Void, Never>?
-    @ObservationIgnored private var writable = true
+    private(set) var storageIssue: String?
+    private var loadFailed = false
+    var writable: Bool { storageIssue == nil }
+    var chooserEvent = UUID()
+    private(set) var newChatEvent = UUID()
+    var nextSettings: BackendSettings {
+        var settings = state.settings
+        if let route = selected?.route { settings.mode = route }
+        return settings
+    }
+    var retryLabel: String { selected?.messages.last?.status == .complete ? "Regenerate" : "Retry" }
+    func retryStorage() async {
+        if loadFailed {
+            isRestored = false
+            await restore()
+        } else {
+            storageIssue = nil
+            saveNow()
+        }
+    }
     private let persistenceQueue = DispatchQueue(label: "app.still.chat-storage", qos: .utility)
 
     var busy: Bool { activeReply != nil }
@@ -57,18 +78,19 @@ import StillCore
         let earlyDraft = draft
         do {
             state = try result.get()
+            storageIssue = nil
+            loadFailed = false
         } catch {
-            writable = false
-            self.error = "Your saved chats could not be opened. \(error.localizedDescription)"
+            loadFailed = true
+            storageIssue = "Your saved chats could not be opened. \(error.localizedDescription)"
         }
 
         if state.conversations.isEmpty {
             var chat = Conversation()
-            chat.localModel = state.settings.localModel
+            chat.route = state.settings.mode
             state.conversations.append(chat)
         }
         if selected == nil { state.selectedID = state.conversations.first?.id }
-        if let model = selected?.localModel { state.settings.mode = model.mode }
         draft = [selected?.draft ?? "", earlyDraft].filter { !$0.isEmpty }.joined(separator: "\n")
         isRestored = true
         if !earlyDraft.isEmpty { saveSoon() }
@@ -85,15 +107,11 @@ import StillCore
     func select(_ id: UUID?, focusComposer: Bool = true) {
         guard isRestored, let id, id != state.selectedID, state.conversations.contains(where: { $0.id == id }) else { return }
         switchConversation(to: id, focusComposer: focusComposer)
-        if !busy, let model = selected?.localModel { selectModel(model) }
         saveSoon()
     }
 
-    func selectModel(_ model: LocalModel) {
-        guard isRestored, !busy else { return }
-        if state.settings.localModel != model { runtime.unload() }
-        state.settings.mode = model.mode
-        updateSelected { $0.localModel = model }
+    func selectRoute(_ mode: BackendMode) {
+        updateSelected { $0.route = mode }
         saveNow()
     }
 
@@ -104,13 +122,12 @@ import StillCore
             switchConversation(to: empty.id)
         } else {
             var chat = Conversation()
-            chat.localModel = state.settings.localModel
+            chat.route = state.settings.mode
             state.conversations.insert(chat, at: 0)
             switchConversation(to: chat.id)
         }
-        let currentModel = state.settings.localModel
-        updateSelected { $0.localModel = currentModel }
         search = ""
+        newChatEvent = UUID()
         focusID = UUID()
         saveSoon()
     }
@@ -118,6 +135,7 @@ import StillCore
     func rename(_ id: UUID, to title: String) {
         let value = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty, let index = state.conversations.firstIndex(where: { $0.id == id }) else { return }
+        state.conversations[index].explicitTitle = true
         state.conversations[index].title = value
         saveNow()
     }
@@ -127,14 +145,22 @@ import StillCore
         state.conversations.removeAll { $0.id == id }
         if state.selectedID == id {
             switchConversation(to: state.conversations.first?.id)
-            if !busy, let model = selected?.localModel { selectModel(model) }
         }
         if state.conversations.isEmpty { newChat() }
         saveNow()
     }
 
+    var routeReady: Bool {
+        guard let route = selected?.route else { return false }
+        return route != .compatible || (try? nextSettings.validatedEndpoint()) != nil
+    }
+
+    var canRetry: Bool {
+        writable && routeReady && !busy && selected?.messages.last?.role == .assistant
+    }
+
     var canSend: Bool {
-        isRestored && !busy && state.selectedID != nil && draft.contains { !$0.isWhitespace }
+        isRestored && writable && !busy && routeReady && draft.utf8.count <= 48000 && draft.contains { !$0.isWhitespace }
     }
 
     func send() {
@@ -143,7 +169,7 @@ import StillCore
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.utf8.count > 48000 { error = "That message is too large. Try a shorter excerpt."; return }
         updateSelected { chat in
-            if chat.messages.isEmpty { chat.title = String(text.replacingOccurrences(of: "\n", with: " ").prefix(52)) }
+            if chat.messages.isEmpty && chat.title == "New chat" && chat.explicitTitle != true { chat.title = String(text.replacingOccurrences(of: "\n", with: " ").prefix(52)) }
             chat.messages.append(Message(role: .user, text: text))
             chat.draft = ""
             chat.updatedAt = Date()
@@ -154,17 +180,18 @@ import StillCore
 
     func retry() {
         let started = ContinuousClock.now
-        guard isRestored, !busy, let id = state.selectedID, selected?.messages.last?.role == .assistant else { return }
-        updateSelected { $0.messages.removeLast() }
-        generate(in: id, started: started)
+        guard isRestored, canRetry, let id = state.selectedID else { return }
+        generate(in: id, started: started, replacing: true)
     }
 
-    private func generate(in chatID: UUID, started: ContinuousClock.Instant) {
+    private func generate(in chatID: UUID, started: ContinuousClock.Instant, replacing: Bool = false) {
         guard let index = state.conversations.firstIndex(where: { $0.id == chatID }) else { return }
-        let settings = state.settings
-        let history = state.conversations[index].messages
+        let settings = nextSettings
+        let history = state.conversations[index].messages.dropLast(replacing ? 1 : 0)
         let message = Message(role: .assistant, text: "", status: .streaming, model: settings.label)
         let reply = LiveReply(conversationID: chatID, message: message, started: started)
+        reply.usesLocalRuntime = settings.localModel != nil
+        reply.replacing = replacing
         let timing = reply.timing
         state.conversations[index].messages.append(message)
         activeReply = reply
@@ -203,8 +230,7 @@ import StillCore
             }
             finish(reply)
             runtime.scheduleUnload()
-            if let model = selected?.localModel, model != state.settings.localModel { selectModel(model) }
-            else { saveNow() }
+            saveNow()
         }
     }
 
@@ -226,30 +252,37 @@ import StillCore
         reply.message.status = .stopped
         reply.message.note = "Stopped"
         finish(reply)
-        runtime.unload()
-        if let model = selected?.localModel { state.settings.mode = model.mode }
+        if reply.usesLocalRuntime { runtime.unload() }
         saveNow()
     }
 
     private func finish(_ reply: LiveReply) {
         if let index = state.conversations.firstIndex(where: { $0.id == reply.conversationID }),
            state.conversations[index].messages.last?.id == reply.message.id {
-            state.conversations[index].messages[state.conversations[index].messages.count - 1] = reply.message
+            if reply.replacing {
+                state.conversations[index].messages.removeLast()
+                if reply.message.status == .complete {
+                    state.conversations[index].messages.removeLast()
+                    state.conversations[index].messages.append(reply.message)
+                } else {
+                    error = "Previous reply kept in “\(state.conversations[index].title)”. " + (reply.message.note ?? "")
+                }
+            } else {
+                state.conversations[index].messages[state.conversations[index].messages.count - 1] = reply.message
+            }
         }
         activeReply = nil
         generation = nil
     }
 
-    func saveSettings(_ settings: BackendSettings, apiKey: String) throws {
+    func saveSettings(_ settings: BackendSettings, apiKey: String?) throws {
         guard isRestored else { throw ChatError.message("Wait for your chats to open before saving settings.") }
-        guard !busy else { throw ChatError.message("Stop the current reply before changing the backend.") }
-        if settings.mode == .compatible {
+        guard writable else { throw ChatError.message("Restore saving before changing settings.") }
+        if settings.mode == .compatible || !settings.model.isEmpty {
             let endpoint = try settings.validatedEndpoint()
-            try Keychain.write(apiKey, account: endpoint.absoluteString)
+            if let apiKey { try Keychain.write(apiKey, account: endpoint.absoluteString) }
         }
-        runtime.unload()
         state.settings = settings
-        updateSelected { $0.localModel = settings.localModel }
         saveNow()
     }
 
@@ -276,7 +309,7 @@ import StillCore
                 try storage.save(state)
             } catch {
                 let message = "Could not save your chats: \(error.localizedDescription)"
-                Task { @MainActor [weak self] in self?.error = message }
+                Task { @MainActor [weak self] in self?.storageIssue = message }
             }
         }
     }
@@ -300,6 +333,10 @@ import StillCore
            let index = snapshot.conversations.firstIndex(where: { $0.id == reply.conversationID }),
            snapshot.conversations[index].messages.last?.id == reply.message.id {
             snapshot.conversations[index].messages[snapshot.conversations[index].messages.count - 1] = reply.message
+        }
+        if let reply = activeReply, reply.replacing,
+           let i = snapshot.conversations.firstIndex(where: { $0.id == reply.conversationID }) {
+            snapshot.conversations[i].messages.removeLast()
         }
         return snapshot
     }

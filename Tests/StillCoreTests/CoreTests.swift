@@ -98,3 +98,34 @@ import Testing
     let legacy = try JSONDecoder().decode(Conversation.self, from: JSONEncoder().encode(Conversation()))
     #expect(legacy.localModel == nil)
 }
+
+@Test func legacyRoutesAndExplicitChoicesSurviveRelaunch() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let storage = ChatStorage(directory: directory)
+    var state = SavedState()
+    state.version = 1
+    var local = Conversation()
+    local.localModel = .gemma12B
+    var server = Conversation()
+    server.messages = [Message(role: .assistant, text: "Example", model: "Fixture server")]
+    state.conversations = [local, server, Conversation()]
+    try storage.save(state)
+    var migrated = try storage.load()
+    #expect(migrated.conversations.map(\.route) == [.gemma, .compatible, nil])
+    migrated.conversations[0].route = .compatible
+    migrated.conversations[1].route = .inkling
+    try storage.save(migrated)
+    #expect(try storage.load().conversations.map(\.route) == [.compatible, .inkling, nil])
+}
+
+@Test func futureLibraryPreservedEvenWithDifferentSchema() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let storage = ChatStorage(directory: directory)
+    let data = Data(#"{"version":99}"#.utf8)
+    try data.write(to: storage.fileURL)
+    #expect(throws: ChatError.self) { try storage.load() }
+    #expect(try Data(contentsOf: storage.fileURL) == data)
+}

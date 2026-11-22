@@ -10,7 +10,8 @@ import StillCore
     @ObservationIgnored private var idleTask: Task<Void, Never>?
     static let port = 18765
     static let endpoint = URL(string: "http://127.0.0.1:\(port)/v1")!
-    @ObservationIgnored private var loadedModel: LocalModel?
+    var canUnload: Bool { loadedModel != nil }
+    private var loadedModel: LocalModel?
     @ObservationIgnored private var retiring: [Process] = []
 
     func ready(_ model: LocalModel) async throws {

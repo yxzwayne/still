@@ -19,9 +19,11 @@ public struct Message: Codable, Identifiable, Sendable, Equatable {
 
 public struct Conversation: Codable, Identifiable, Sendable, Equatable {
     public var id: UUID = UUID()
+    public var explicitTitle: Bool?
     public var title: String = "New chat"
     public var messages: [Message] = []
     public var localModel: LocalModel?
+    public var route: BackendMode?
     public var draft: String = ""
     public var updatedAt: Date = Date()
     public init() {}
@@ -55,7 +57,7 @@ public struct BackendSettings: Codable, Sendable, Equatable {
 }
 
 public struct SavedState: Codable, Sendable {
-    public var version = 1
+    public var version = 2
     public var conversations: [Conversation] = []
     public var selectedID: UUID?
     public var settings = BackendSettings()
