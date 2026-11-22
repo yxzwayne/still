@@ -1,0 +1,8 @@
+.build/
+.swiftpm/
+.DS_Store
+__pycache__/
+dist/
+
+/still-ui-timing.log
+/Benchmarks/gemma-text-results.json
