@@ -4,7 +4,7 @@ import SwiftUI
 struct ComposerTextView: NSViewRepresentable {
     @Binding var text: String
     @Binding var height: CGFloat
-    let focusID: UUID
+    let focusID: UUID?
     let onSubmit: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
@@ -37,7 +37,7 @@ struct ComposerTextView: NSViewRepresentable {
             editor.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
             coordinator.resize(editor)
         }
-        if coordinator.lastFocus != focusID {
+        if let focusID, coordinator.lastFocus != focusID {
             coordinator.lastFocus = focusID
             editor.requestFocus()
         }

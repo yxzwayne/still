@@ -15,6 +15,8 @@ struct ChatWindow: View {
     @State private var searchJump: SearchJump?
     @State private var searching = false
     @FocusState private var searchFocused: Bool
+    @FocusState private var chatListFocused: Bool
+    @FocusState private var focusedChatID: UUID?
     @State private var composerHeight: CGFloat = 86
 
     var body: some View {
@@ -28,7 +30,8 @@ struct ChatWindow: View {
                         Text(error).font(.callout).textSelection(.enabled)
                         Spacer()
                         Button { store.error = nil } label: {
-                            Image(systemName: "xmark").frame(width: 22, height: 22)
+                            Image(systemName: "xmark")
+                                .frame(width: InteractionMetrics.controlSize, height: InteractionMetrics.controlSize)
                         }
                         .buttonStyle(HoverButtonStyle())
                         .help("Dismiss error")
@@ -64,11 +67,11 @@ struct ChatWindow: View {
                     } label: {
                         HStack(spacing: 7) {
                             Image(systemName: store.state.settings.localModel != nil ? "desktopcomputer" : "network")
-                            Text(store.state.settings.label).font(.callout)
+                            Text(store.state.settings.label).font(.callout).lineLimit(1)
                         }
                     }
                     .disabled(!store.isRestored)
-                    .help(store.state.settings.localModel == nil ? "Server · Model and backend" : "On this Mac · Model and backend")
+                    .help("\(store.state.settings.label) · Select model and backend")
                 }
             }
         }
@@ -94,63 +97,79 @@ struct ChatWindow: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Still").font(.title2.weight(.semibold))
-                .padding(.horizontal, 16).padding(.bottom, 6)
+                .padding(.horizontal, SidebarMetrics.inset + SidebarMetrics.labelInset)
+                .padding(.bottom, 6)
             VStack(alignment: .leading, spacing: 2) {
                 Button { closeSearch(); store.newChat() } label: {
-                    Label("New Chat", systemImage: "square.and.pencil")
-                        .frame(maxWidth: .infinity, minHeight: 27, alignment: .leading)
-                        .padding(.horizontal, 6)
+                    sidebarLabel("New Chat", symbol: "square.and.pencil")
                 }
                 .help("New chat (⌘N)")
-                if searching {
-                    HStack {
-                        TextField("Search chats", text: $store.search)
-                            .textFieldStyle(.roundedBorder)
-                            .focused($searchFocused)
-                        Button { closeSearch() } label: {
-                            Image(systemName: "xmark").frame(width: 23, height: 23)
+                Group {
+                    if searching {
+                        HStack(spacing: 4) {
+                            TextField("Search chats", text: $store.search)
+                                .textFieldStyle(.roundedBorder)
+                                .focused($searchFocused)
+                            Button { closeSearch() } label: {
+                                Image(systemName: "xmark")
+                                    .frame(width: InteractionMetrics.controlSize, height: InteractionMetrics.controlSize)
+                            }
+                            .help("Close search")
+                            .accessibilityLabel("Close search")
                         }
-                        .help("Close search")
-                        .accessibilityLabel("Close search")
+                        .padding(.leading, SidebarMetrics.labelInset)
+                        .task {
+                            await Task.yield()
+                            if searching { searchFocused = true }
+                        }
+                    } else {
+                        Button { searching = true } label: {
+                            sidebarLabel("Search", symbol: "magnifyingglass")
+                        }
+                        .keyboardShortcut("f")
                     }
-                    .padding(.horizontal, 6)
-                    .task {
-                        await Task.yield()
-                        if searching { searchFocused = true }
-                    }
-                } else {
-                    Button { searching = true } label: {
-                        Label("Search", systemImage: "magnifyingglass")
-                            .frame(maxWidth: .infinity, minHeight: 27, alignment: .leading)
-                            .padding(.horizontal, 6)
-                    }
-                    .keyboardShortcut("f")
                 }
+                .frame(height: InteractionMetrics.controlSize)
             }
             .buttonStyle(HoverButtonStyle())
-            .padding(.horizontal, 10)
+            .padding(.horizontal, SidebarMetrics.inset)
             .padding(.bottom, 8)
 
             ScrollViewReader { proxy in
-                List(selection: Binding(get: { store.state.selectedID }, set: { id in
-                    guard let id else { return }
-                    store.select(id)
-                    revealMatch(in: id)
-                })) {
-                    ForEach(store.chats) { chat in
-                        SidebarRow(chat: chat, search: store.search,
-                                   generating: store.activeReply?.conversationID == chat.id,
-                                   isSelected: store.state.selectedID == chat.id)
-                            .simultaneousGesture(TapGesture().onEnded { revealMatch(in: chat.id) })
-                            .tag(chat.id)
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(store.chats) { chat in
+                            Button {
+                                store.select(chat.id)
+                                revealMatch(in: chat.id)
+                            } label: {
+                                SidebarRow(chat: chat, search: store.search,
+                                           generating: store.activeReply?.conversationID == chat.id)
+                            }
+                            .buttonStyle(HoverButtonStyle(shape: SidebarMetrics.chatRowShape,
+                                                          isSelected: store.state.selectedID == chat.id))
+                            .accessibilityAddTraits(store.state.selectedID == chat.id ? .isSelected : [])
+                            .focused($focusedChatID, equals: chat.id)
                             .id(chat.id)
                             .contextMenu {
                                 Button("Rename…") { renameText = chat.title; renameID = chat.id }
                                 Button("Delete…", role: .destructive) { deleteID = chat.id }
                             }
+                        }
                     }
+                    .padding(.horizontal, SidebarMetrics.inset)
+                    .padding(.vertical, 4)
                 }
-                .listStyle(.sidebar)
+                .accessibilityLabel("Chats")
+                .focusable(interactions: .edit)
+                .focused($chatListFocused)
+                .onMoveCommand { direction in
+                    guard let id = adjacentChatID(in: direction) else { return }
+                    store.select(id, focusComposer: false)
+                    revealMatch(in: id)
+                    proxy.scrollTo(id)
+                    if focusedChatID != nil { focusedChatID = id }
+                }
                 .overlay {
                     if store.isRestored && !store.search.isEmpty && store.chats.isEmpty {
                         Text("No matching chats").foregroundStyle(.secondary).font(.callout)
@@ -161,21 +180,42 @@ struct ChatWindow: View {
                 }
             }
 
-            HStack {
-                SettingsLink {
-                    Label("Settings", systemImage: "gearshape").font(.callout)
-                        .padding(.horizontal, 6)
-                        .frame(minHeight: 24)
-                }
-                .buttonStyle(HoverButtonStyle())
-                Spacer()
+            SettingsLink {
+                sidebarLabel("Settings", symbol: "gearshape")
             }
+            .buttonStyle(HoverButtonStyle())
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 10)
+            .padding(.horizontal, SidebarMetrics.inset)
             .padding(.bottom, 16)
         }
         .disabled(!store.isRestored)
         .navigationTitle("Still")
+    }
+
+    private func sidebarLabel(_ title: LocalizedStringKey, symbol: String) -> some View {
+        Label {
+            Text(title)
+        } icon: {
+            Image(systemName: symbol).frame(width: 18)
+        }
+        .frame(maxWidth: .infinity, minHeight: InteractionMetrics.controlSize, alignment: .leading)
+        .padding(.horizontal, SidebarMetrics.labelInset)
+    }
+
+    private func adjacentChatID(in direction: MoveCommandDirection) -> UUID? {
+        guard chatListFocused || focusedChatID != nil else { return nil }
+        let chats = store.chats
+        let currentID = focusedChatID ?? store.state.selectedID
+        let index = chats.firstIndex { $0.id == currentID }
+        switch direction {
+        case .up:
+            guard let index else { return chats.last?.id }
+            return index > chats.startIndex ? chats[index - 1].id : nil
+        case .down:
+            guard let index else { return chats.first?.id }
+            return index + 1 < chats.endIndex ? chats[index + 1].id : nil
+        default: return nil
+        }
     }
 
     private func revealMatch(in id: UUID) {
@@ -202,11 +242,17 @@ struct ChatWindow: View {
     }
 }
 
+private enum SidebarMetrics {
+    static let inset: CGFloat = 10
+    static let labelInset: CGFloat = 6
+    static let chatRowHeight: CGFloat = 32
+    static let chatRowShape = RoundedRectangle(cornerRadius: 8)
+}
+
 private struct SidebarRow: View {
     let chat: Conversation
     let search: String
     let generating: Bool
-    let isSelected: Bool
 
     private var excerpt: Text? {
         guard !search.isEmpty, !chat.title.localizedCaseInsensitiveContains(search) else { return nil }
@@ -232,11 +278,9 @@ private struct SidebarRow: View {
             if generating { Spacer(); ProgressView().controlSize(.mini).accessibilityLabel("Replying") }
         }
         .help(chat.title)
+        .padding(.horizontal, SidebarMetrics.labelInset)
         .padding(.vertical, 3)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 5)
-        .modifier(HoverHighlight(shape: RoundedRectangle(cornerRadius: 6), isSelected: isSelected))
-        .padding(.horizontal, -5)
+        .frame(maxWidth: .infinity, minHeight: SidebarMetrics.chatRowHeight, alignment: .leading)
     }
 }
 
@@ -350,6 +394,7 @@ private struct TranscriptRow: View {
 
 private struct ChatComposer: View {
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let store: ChatStore
     @State private var editorHeight = SubmitTextView.singleLineHeight
 
@@ -358,7 +403,8 @@ private struct ChatComposer: View {
             if let reply = store.activeReply, !store.replyingHere {
                 Button { store.select(reply.conversationID) } label: {
                     Label("View chat generating a reply", systemImage: "arrow.up.right")
-                        .padding(.horizontal, 5).padding(.vertical, 3)
+                        .padding(.horizontal, 6)
+                        .frame(minHeight: InteractionMetrics.controlSize)
                 }
                 .buttonStyle(HoverButtonStyle())
                 .font(.caption).foregroundStyle(Color(nsColor: .linkColor)).padding(.leading, 3)
@@ -380,19 +426,22 @@ private struct ChatComposer: View {
                         Text(store.state.settings.label)
                             .font(.callout)
                             .lineLimit(1)
+                            .truncationMode(.tail)
                             .padding(.horizontal, 8)
-                            .frame(height: 28)
+                            .frame(height: InteractionMetrics.controlSize)
                     }
                     .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
+                    .menuIndicator(.visible)
                     .tint(.primary)
                     .modifier(HoverHighlight(shape: Capsule()))
+                    .contentShape(.focusEffect, Capsule())
                     .disabled(!store.isRestored)
-                    .help("Select model")
+                    .help("Select model · \(store.state.settings.label)")
                     .accessibilityLabel("Select model")
                     .accessibilityValue(store.state.settings.label)
 
                     sendButton
+                        .layoutPriority(1)
                 }
             }
             .padding(9)
@@ -422,12 +471,11 @@ private struct ChatComposer: View {
             Image(systemName: busy ? "stop.fill" : "arrow.up")
                 .font(.system(size: busy ? 12 : 16, weight: .semibold))
                 .contentTransition(.opacity)
-                .animation(InteractionMotion.symbol, value: busy)
-                .frame(width: 28, height: 28)
-                .background(enabled ? accent : Color.primary.opacity(0.07), in: Circle())
+                .animation(reduceMotion ? nil : InteractionMotion.symbol, value: busy)
+                .frame(width: InteractionMetrics.controlSize, height: InteractionMetrics.controlSize)
                 .foregroundStyle(enabled ? Color.white : .secondary)
         }
-        .buttonStyle(HoverButtonStyle(shape: Circle(), tint: .white))
+        .buttonStyle(HoverButtonStyle(shape: Circle(), tint: .black, fill: enabled ? accent : .primary.opacity(0.07)))
         .disabled(!enabled)
         .help(busy ? "Stop reply (⌘.)" : "Send (Return) · New line (⇧Return)")
         .accessibilityLabel(label)
@@ -501,7 +549,8 @@ struct MessageView: View {
                                     Image(systemName: "chevron.right")
                                         .rotationEffect(.degrees(reasoningExpanded ? 90 : 0))
                                 }
-                                .padding(.horizontal, 5).padding(.vertical, 3)
+                                .padding(.horizontal, 6)
+                                .frame(minHeight: InteractionMetrics.controlSize)
                             }
                             .buttonStyle(HoverButtonStyle())
                             .accessibilityValue(reasoningExpanded ? "Expanded" : "Collapsed")
@@ -532,24 +581,41 @@ struct MessageView: View {
                         }
                 }
                 if message.status != .streaming {
-                    HStack(spacing: 4) {
-                        if let note = message.note {
-                            Text(note).foregroundStyle(message.status == .failed ? Color.orange : Color.secondary)
-                                .textSelection(.enabled)
-                        }
-                        if !message.text.isEmpty { CopyButton(text: message.text) }
-                        if canRetry {
-                            Button(action: retry) {
-                                Label("Retry", systemImage: "arrow.clockwise").labelStyle(.iconOnly)
-                                    .frame(width: 22, height: 22)
-                            }
-                            .buttonStyle(HoverButtonStyle())
-                            .help("Retry last reply")
-                        }
-                    }.font(.system(size: 11)).foregroundStyle(.secondary)
+                    replyFooter
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                 }
             }
         }.frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
+    }
+
+    private var replyFooter: some View {
+        HStack(alignment: .top, spacing: 8) {
+            if !message.text.isEmpty || canRetry {
+                replyActions.fixedSize()
+            }
+            if let note = message.note {
+                Text(note)
+                    .foregroundStyle(message.status == .failed ? Color.orange : Color.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 6)
+            }
+        }
+    }
+
+    private var replyActions: some View {
+        HStack(spacing: 4) {
+            if !message.text.isEmpty { CopyButton(text: message.text, title: "Copy response") }
+            if canRetry {
+                Button(action: retry) {
+                    Label("Retry last reply", systemImage: "arrow.clockwise").labelStyle(.iconOnly)
+                        .frame(width: InteractionMetrics.controlSize, height: InteractionMetrics.controlSize)
+                }
+                .buttonStyle(HoverButtonStyle())
+                .help("Retry last reply")
+            }
+        }
     }
 }
 
@@ -618,9 +684,13 @@ struct CodeBlock: View {
     var code: String { text.contains("\n") ? String(text.dropFirst(language.count + 1)).trimmingCharacters(in: .newlines) : text }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack { Text(language.isEmpty ? "Code" : language); Spacer(); CopyButton(text: code) }
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-                .padding(.leading, 12).padding(.trailing, 8).padding(.vertical, 8)
+            HStack {
+                Text(language.isEmpty ? "Code" : language)
+                Spacer(minLength: 4)
+                CopyButton(text: code, title: "Copy code").fixedSize()
+            }
+            .font(.system(size: 11)).foregroundStyle(.secondary)
+            .padding(.leading, 12).padding(.trailing, 8).padding(.vertical, 5)
             Divider().opacity(0.4)
             ScrollView(.horizontal) { Text(code).font(.system(size: 13, design: .monospaced)).textSelection(.enabled).padding(14).frame(maxWidth: .infinity, alignment: .leading) }
         }.background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.primary.opacity(0.06)))
@@ -629,6 +699,8 @@ struct CodeBlock: View {
 
 private struct CopyButton: View {
     let text: String
+    let title: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var confirmation: Int?
 
     var body: some View {
@@ -639,12 +711,13 @@ private struct CopyButton: View {
         } label: {
             Image(systemName: confirmation == nil ? "doc.on.doc" : "checkmark")
                 .contentTransition(.opacity)
-                .animation(InteractionMotion.symbol, value: confirmation != nil)
-                .frame(width: 22, height: 22)
+                .animation(reduceMotion ? nil : InteractionMotion.symbol, value: confirmation != nil)
+                .frame(width: InteractionMetrics.controlSize, height: InteractionMetrics.controlSize)
         }
         .buttonStyle(HoverButtonStyle())
-        .accessibilityLabel(confirmation == nil ? "Copy" : "Copied")
-        .help(confirmation == nil ? "Copy" : "Copied")
+        .accessibilityLabel(title)
+        .accessibilityValue(confirmation == nil ? "" : "Copied")
+        .help(confirmation == nil ? title : "Copied")
         .task(id: confirmation) {
             guard let confirmation else { return }
             for _ in 0..<10 {

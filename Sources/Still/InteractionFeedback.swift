@@ -1,9 +1,13 @@
 import SwiftUI
 
 enum InteractionMotion {
-    static let highlight = Animation.easeInOut(duration: 0.10)
     static let symbol = Animation.easeInOut(duration: 0.12)
     static let reveal = Animation.timingCurve(0.23, 1, 0.32, 1, duration: 0.18)
+}
+
+enum InteractionMetrics {
+    static let controlSize: CGFloat = 28
+    static let cornerRadius: CGFloat = 6
 }
 
 struct HoverHighlight<Background: Shape>: ViewModifier {
@@ -12,41 +16,61 @@ struct HoverHighlight<Background: Shape>: ViewModifier {
     var isPressed = false
     var isSelected = false
 
-    @Environment(\.isEnabled) private var isEnabled
     @State private var isHovered = false
-
-    private var opacity: Double {
-        guard isEnabled, !isSelected else { return 0 }
-        if isPressed { return 0.16 }
-        return isHovered ? 0.09 : 0
-    }
 
     func body(content: Content) -> some View {
         content
-            .overlay {
-                shape.fill(tint)
-                    .opacity(opacity)
-                    .animation(InteractionMotion.highlight, value: opacity)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+            .background {
+                InteractionFill(shape: shape, tint: tint, isPressed: isPressed,
+                                isSelected: isSelected, isHovered: isHovered)
             }
+            .contentShape(.interaction, shape)
             .onHover { isHovered = $0 }
+    }
+}
+
+struct InteractionFill<Background: Shape>: View {
+    let shape: Background
+    let tint: Color
+    let isPressed: Bool
+    let isSelected: Bool
+    let isHovered: Bool
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    private var opacity: Double {
+        if !isEnabled { return isSelected ? 0.10 : 0 }
+        if isPressed { return contrast == .increased ? 0.25 : 0.16 }
+        if isSelected { return contrast == .increased ? 0.22 : 0.14 }
+        if isHovered { return contrast == .increased ? 0.16 : 0.09 }
+        return 0
+    }
+
+    var body: some View {
+        shape.fill(tint.opacity(opacity))
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }
 
 struct HoverButtonStyle<Background: Shape>: ButtonStyle {
     let shape: Background
     var tint: Color = .primary
+    var fill: Color = .clear
+    var isSelected = false
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .contentShape(shape)
-            .modifier(HoverHighlight(shape: shape, tint: tint, isPressed: configuration.isPressed))
+            .modifier(HoverHighlight(shape: shape, tint: tint, isPressed: configuration.isPressed,
+                                     isSelected: isSelected))
+            .background(fill, in: shape)
+            .contentShape(.focusEffect, shape)
     }
 }
 
 extension HoverButtonStyle where Background == RoundedRectangle {
     init() {
-        self.init(shape: RoundedRectangle(cornerRadius: 6))
+        self.init(shape: RoundedRectangle(cornerRadius: InteractionMetrics.cornerRadius))
     }
 }

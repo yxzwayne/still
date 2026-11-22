@@ -20,7 +20,7 @@ import StillCore
     private(set) var state = SavedState()
     private(set) var isRestored = false
     private(set) var draft = ""
-    private(set) var focusID = UUID()
+    private(set) var focusID: UUID? = UUID()
     private(set) var activeReply: LiveReply?
     private(set) var lastReplyTiming: ReplyTiming?
     var search = ""
@@ -82,9 +82,9 @@ import StillCore
         saveSoon()
     }
 
-    func select(_ id: UUID?) {
+    func select(_ id: UUID?, focusComposer: Bool = true) {
         guard isRestored, let id, id != state.selectedID, state.conversations.contains(where: { $0.id == id }) else { return }
-        switchConversation(to: id)
+        switchConversation(to: id, focusComposer: focusComposer)
         if !busy, let model = selected?.localModel { selectModel(model) }
         saveSoon()
     }
@@ -304,12 +304,12 @@ import StillCore
         return snapshot
     }
 
-    private func switchConversation(to id: UUID?) {
+    private func switchConversation(to id: UUID?, focusComposer: Bool = true) {
         guard id != state.selectedID else { return }
         updateSelected { $0.draft = draft }
         state.selectedID = id
         draft = selected?.draft ?? ""
-        focusID = UUID()
+        focusID = focusComposer ? UUID() : nil
     }
 
     private func updateSelected(_ change: (inout Conversation) -> Void) {
