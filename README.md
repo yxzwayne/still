@@ -2,6 +2,11 @@
 
 A small native macOS chat app, with two curated models running entirely on this Mac: **Inkling 2 Mini** and **Gemma 4 12B**. SwiftUI provides the window and conversations; AppKit provides the composer.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/conversation-dark.png">
+  <img src="docs/screenshots/conversation-light.png" alt="Still on macOS showing the chat sidebar, a formatted answer about clouds, and the local model selector in the composer.">
+</picture>
+
 ## Project layout
 
 The project lives at `/Users/wayne/workspace/still`.
