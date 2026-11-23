@@ -38,7 +38,7 @@ import StillCore
     private(set) var newChatEvent = UUID()
     var nextSettings: BackendSettings {
         var settings = state.settings
-        if let route = selected?.route { settings.mode = route }
+        settings.mode = selected?.route ?? .inkling
         return settings
     }
     var retryLabel: String { selected?.messages.last?.status == .complete ? "Regenerate" : "Retry" }
@@ -151,8 +151,9 @@ import StillCore
     }
 
     var routeReady: Bool {
-        guard let route = selected?.route else { return false }
-        return route != .compatible || (try? nextSettings.validatedEndpoint()) != nil
+        guard selected != nil else { return false }
+        let settings = nextSettings
+        return settings.mode != .compatible || (try? settings.validatedEndpoint()) != nil
     }
 
     var canRetry: Bool {
@@ -275,7 +276,7 @@ import StillCore
         generation = nil
     }
 
-    func saveSettings(_ settings: BackendSettings, apiKey: String?) throws {
+    func saveSettings(_ settings: BackendSettings, apiKey: String?) async throws {
         guard isRestored else { throw ChatError.message("Wait for your chats to open before saving settings.") }
         guard writable else { throw ChatError.message("Restore saving before changing settings.") }
         if settings.mode == .compatible || !settings.model.isEmpty {
@@ -283,7 +284,10 @@ import StillCore
             if let apiKey { try Keychain.write(apiKey, account: endpoint.absoluteString) }
         }
         state.settings = settings
-        saveNow()
+        let issue = await withCheckedContinuation { continuation in
+            saveNow { continuation.resume(returning: $0) }
+        }
+        if let issue { throw ChatError.message(issue) }
     }
 
     func shutdown() {
@@ -298,18 +302,25 @@ import StillCore
         persistenceQueue.sync { try? storage.save(state) }
     }
 
-    private func saveNow() {
+    private func saveNow(completion: (@MainActor @Sendable (String?) -> Void)? = nil) {
         saveTask?.cancel()
         saveTask = nil
-        guard isRestored, writable else { return }
+        guard isRestored, writable else {
+            completion?(storageIssue ?? "Wait for your chats to open before saving settings.")
+            return
+        }
         let state = snapshot()
         let storage = self.storage
         persistenceQueue.async { [weak self] in
             do {
                 try storage.save(state)
+                if let completion { Task { @MainActor in completion(nil) } }
             } catch {
                 let message = "Could not save your chats: \(error.localizedDescription)"
-                Task { @MainActor [weak self] in self?.storageIssue = message }
+                Task { @MainActor [weak self] in
+                    self?.storageIssue = message
+                    completion?(message)
+                }
             }
         }
     }

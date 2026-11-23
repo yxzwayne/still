@@ -15,6 +15,7 @@ struct HoverHighlight<Background: Shape>: ViewModifier {
     var tint: Color = .primary
     var isPressed = false
     var isSelected = false
+    var feedbackAnimation: Animation? = nil
 
     @State private var isHovered = false
 
@@ -22,7 +23,8 @@ struct HoverHighlight<Background: Shape>: ViewModifier {
         content
             .background {
                 InteractionFill(shape: shape, tint: tint, isPressed: isPressed,
-                                isSelected: isSelected, isHovered: isHovered)
+                                isSelected: isSelected, isHovered: isHovered,
+                                feedbackAnimation: feedbackAnimation)
             }
             .contentShape(.interaction, shape)
             .onHover { isHovered = $0 }
@@ -35,6 +37,7 @@ struct InteractionFill<Background: Shape>: View {
     let isPressed: Bool
     let isSelected: Bool
     let isHovered: Bool
+    let feedbackAnimation: Animation?
 
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.colorSchemeContrast) private var contrast
@@ -48,9 +51,15 @@ struct InteractionFill<Background: Shape>: View {
     }
 
     var body: some View {
-        shape.fill(tint.opacity(opacity))
+        let fill = shape.fill(tint)
+            .opacity(opacity)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
+        if let feedbackAnimation {
+            fill.animation(feedbackAnimation, value: opacity)
+        } else {
+            fill
+        }
     }
 }
 
@@ -59,11 +68,12 @@ struct HoverButtonStyle<Background: Shape>: ButtonStyle {
     var tint: Color = .primary
     var fill: Color = .clear
     var isSelected = false
+    var feedbackAnimation: Animation? = nil
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .modifier(HoverHighlight(shape: shape, tint: tint, isPressed: configuration.isPressed,
-                                     isSelected: isSelected))
+                                     isSelected: isSelected, feedbackAnimation: feedbackAnimation))
             .background(fill, in: shape)
             .contentShape(.focusEffect, shape)
     }

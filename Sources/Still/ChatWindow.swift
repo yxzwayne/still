@@ -83,6 +83,7 @@ struct ChatWindow: View {
                 }
             }
         }
+        .background(SidebarToggleAlignment())
         .tint(accent)
         .task { await store.restore() }
         .onExitCommand { if searching { closeSearch() } }
@@ -167,7 +168,7 @@ struct ChatWindow: View {
                                 store.select(chat.id)
                                 revealMatch(in: chat.id)
                             } label: {
-                                SidebarRow(chat: chat, search: store.search, isSelected: isSelected,
+                                SidebarRow(chat: chat, search: store.search,
                                            generating: store.activeReply?.conversationID == chat.id)
                             }
                             .buttonStyle(HoverButtonStyle(shape: Capsule()))
@@ -210,8 +211,8 @@ struct ChatWindow: View {
             }
             .buttonStyle(HoverButtonStyle(shape: Capsule()))
             .foregroundStyle(.secondary)
-            .padding(.horizontal, SidebarMetrics.inset)
-            .padding(.bottom, 16)
+            .padding(.horizontal, 0)
+            .padding(.bottom, SidebarMetrics.inset)
         }
         .disabled(!store.isRestored || !store.writable)
         .navigationTitle("Still")
@@ -284,16 +285,15 @@ struct ChatWindow: View {
 }
 
 private enum SidebarMetrics {
-    static let inset: CGFloat = 10
+    static let inset: CGFloat = 8
     static let labelInset: CGFloat = 10
     static let iconSpacing: CGFloat = 7
-    static let rowHeight: CGFloat = 32
+    static let rowHeight: CGFloat = 30
 }
 
 private struct SidebarRow: View {
     let chat: Conversation
     let search: String
-    let isSelected: Bool
     let generating: Bool
 
     private var excerpt: Text? {
@@ -315,17 +315,16 @@ private struct SidebarRow: View {
     var body: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(chat.title)
-                    .fontWeight(isSelected ? .semibold : .regular)
-                    .lineLimit(1)
+                Text(chat.title).lineLimit(1)
                 if let excerpt { excerpt.foregroundStyle(.secondary).lineLimit(1) }
             }
+            .font(StillTypography.minimum)
             .frame(maxWidth: .infinity, alignment: .leading)
             if generating { ProgressView().controlSize(.mini).accessibilityLabel("Replying") }
         }
         .help(chat.title)
         .padding(.horizontal, SidebarMetrics.labelInset)
-        .padding(.vertical, 3)
+        .padding(.vertical, 2)
         .frame(minHeight: SidebarMetrics.rowHeight)
     }
 }
@@ -364,7 +363,8 @@ private struct ChatTranscript: View {
                             reply: reply?.timing.id == message.id ? reply : nil,
                             timing: timing?.id == message.id ? timing : nil,
                             retry: retry,
-                            canRetry: retryAvailable && message.id == chat.messages.last?.id
+                            canRetry: retryAvailable && message.id == chat.messages.last?.id,
+                            onReasoningToggle: { following = false }
                         )
                         .environment(\.retryModelName, retryModel)
                         .environment(\.activeSearchHit, searchJump?.message == message.id ? searchJump : nil)
@@ -411,7 +411,7 @@ private struct ChatTranscript: View {
                             proxy.scrollTo("latest", anchor: .bottom)
                         } label: {
                             Image(systemName: "arrow.down")
-                                .font(.callout.weight(.semibold))
+                                .font(StillTypography.minimum.weight(.semibold))
                                 .frame(width: 36, height: 36)
                         }
                         .buttonStyle(HoverButtonStyle(shape: Circle()))
@@ -442,9 +442,11 @@ private struct TranscriptRow: View {
     let timing: ReplyTiming?
     let retry: () -> Void
     let canRetry: Bool
+    let onReasoningToggle: () -> Void
 
     var body: some View {
-        MessageView(message: reply?.message ?? message, phase: reply?.phase ?? "", retry: retry, canRetry: canRetry, timing: timing)
+        MessageView(message: reply?.message ?? message, phase: reply?.phase ?? "", retry: retry,
+                    canRetry: canRetry, timing: timing, onReasoningToggle: onReasoningToggle)
     }
 }
 
@@ -456,10 +458,7 @@ private struct ChatComposer: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if store.selected != nil && store.selected?.route == nil {
-                Text("Choose a model before sending to this saved chat.")
-            }
-            if store.selected?.route == .compatible && !store.routeReady {
+            if store.nextSettings.mode == .compatible && !store.routeReady {
                 HStack {
                     Text("Set up the server to send here.")
                     SettingsLink { Text("Open Settings") }
@@ -516,7 +515,7 @@ private struct ChatComposer: View {
             if busy { store.stop() } else { store.send() }
         } label: {
             Image(systemName: busy ? "stop.fill" : "arrow.up")
-                .font(.system(size: busy ? 12 : 16, weight: .semibold))
+                .font(.system(size: busy ? 13 : 16, weight: .semibold))
                 .contentTransition(.opacity)
                 .animation(reduceMotion ? nil : InteractionMotion.symbol, value: busy)
                 .frame(width: InteractionMetrics.controlSize, height: InteractionMetrics.controlSize)
@@ -536,7 +535,7 @@ private struct ModelChooser: View {
     @State private var cursor: BackendMode?
     @FocusState private var focused: BackendMode?
     @FocusState private var triggerFocused: Bool
-    private var route: BackendMode? { store.selected?.route }
+    private var route: BackendMode { store.nextSettings.mode }
     private func label(_ mode: BackendMode) -> String {
         var settings = store.state.settings
         settings.mode = mode
@@ -546,14 +545,18 @@ private struct ModelChooser: View {
     var body: some View {
         Button { open.toggle() } label: {
             HStack(spacing: 5) {
-                Text(route.map(label) ?? "Choose model").lineLimit(1)
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.down").font(.caption2)
-            }.padding(.horizontal, 8).frame(maxWidth: 240).frame(height: InteractionMetrics.controlSize)
+                Text(label(route)).lineLimit(1)
+                Image(systemName: "chevron.down")
+            }
+            .padding(.horizontal, 8)
+            .frame(maxWidth: 240)
+            .fixedSize(horizontal: true, vertical: false)
+            .frame(height: InteractionMetrics.controlSize)
         }
-        .buttonStyle(HoverButtonStyle(shape: Capsule(), isSelected: open))
+        .buttonStyle(HoverButtonStyle(shape: Capsule(), isSelected: open || triggerFocused))
         .onChange(of: store.chooserEvent) { open.toggle() }
         .focused($triggerFocused)
+        .focusEffectDisabled()
         .disabled(!store.isRestored)
         .help("Choose the model for the next message (⇧⌘M)")
         .popover(isPresented: $open) {
@@ -566,22 +569,20 @@ private struct ModelChooser: View {
                             if route == mode { Image(systemName: "checkmark") }
                         }.padding(.horizontal, 8).frame(height: 32)
                     }
-                    .buttonStyle(HoverButtonStyle(shape: RoundedRectangle(cornerRadius: 6), isSelected: route == mode))
-                    .overlay {
-                        if cursor == mode { RoundedRectangle(cornerRadius: 6).strokeBorder(Color.accentColor, lineWidth: 2).allowsHitTesting(false) }
-                    }
+                    .buttonStyle(HoverButtonStyle(shape: Capsule(), isSelected: (cursor ?? focused) == mode))
                     .focusable(interactions: .edit)
                     .focused($focused, equals: mode)
+                    .focusEffectDisabled()
                     .accessibilityAddTraits(route == mode ? .isSelected : [])
                 }
             }.padding(6).frame(width: 250)
             .onAppear {
-                focused = route ?? .inkling
+                focused = route
                 cursor = nil
                 keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                     guard open, event.modifierFlags.intersection([.command, .option, .control]).isEmpty else { return event }
                     let modes = BackendMode.allCases
-                    let index = modes.firstIndex(of: cursor ?? focused ?? route ?? .inkling) ?? 0
+                    let index = modes.firstIndex(of: cursor ?? focused ?? route) ?? 0
                     switch event.keyCode {
                     case 125, 126:
                         let offset = event.keyCode == 125 ? 1 : modes.count - 1
@@ -644,7 +645,7 @@ struct MessageView: View {
     let retry: () -> Void
     let canRetry: Bool
     let timing: ReplyTiming?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let onReasoningToggle: () -> Void
     @Environment(\.retryModelName) private var retryModel
     @Environment(\.activeSearchHit) private var searchHit
     @ViewBuilder private var searchableText: some View {
@@ -672,7 +673,6 @@ struct MessageView: View {
         match.foregroundColor = .black
         return match
     }
-    @State private var reasoningExpanded = false
     var body: some View {
         VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 10) {
             if message.role == .user {
@@ -680,35 +680,9 @@ struct MessageView: View {
                     .padding(.horizontal, 17).padding(.vertical, 13).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 17))
                     .frame(maxWidth: 580, alignment: .trailing).frame(maxWidth: .infinity, alignment: .trailing)
             } else {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 5) {
-                        Text(message.model ?? "Assistant").fontWeight(.medium)
-                        if let reasoning = message.reasoning, !reasoning.isEmpty {
-                            Button { reasoningExpanded.toggle() } label: {
-                                Label {
-                                    Text("Reasoning")
-                                } icon: {
-                                    Image(systemName: "chevron.right")
-                                        .rotationEffect(.degrees(reasoningExpanded ? 90 : 0))
-                                }
-                                .padding(.horizontal, 6)
-                                .frame(minHeight: InteractionMetrics.controlSize)
-                            }
-                            .buttonStyle(HoverButtonStyle())
-                            .accessibilityValue(reasoningExpanded ? "Expanded" : "Collapsed")
-                        }
-                    }
-                    .foregroundStyle(.secondary)
-                    if reasoningExpanded, let reasoning = message.reasoning {
-                        Text(reasoning).foregroundStyle(.secondary)
-                            .textSelection(.enabled).padding(.leading, 12)
-                            .overlay(alignment: .leading) {
-                                Rectangle().fill(.separator).frame(width: 1).allowsHitTesting(false)
-                            }
-                            .transition(.opacity)
-                    }
+                if let reasoning = message.reasoning, !reasoning.isEmpty {
+                    ReasoningDisclosure(reasoning: reasoning, onToggle: onReasoningToggle)
                 }
-                .animation(reduceMotion ? nil : InteractionMotion.reveal, value: reasoningExpanded)
                 if message.text.isEmpty && message.status == .streaming {
                     HStack(spacing: 8) { ProgressView().controlSize(.small); Text(phase).foregroundStyle(.secondary) }.padding(.vertical, 4)
                 } else if !message.text.isEmpty {
@@ -725,39 +699,53 @@ struct MessageView: View {
                             }
                         }
                 }
-                if message.status != .streaming {
-                    replyFooter
-                        .foregroundStyle(.secondary)
-                }
+                replyFooter
             }
         }.frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
     }
 
     private var replyFooter: some View {
-        HStack(alignment: .top, spacing: 8) {
-            if !message.text.isEmpty || canRetry {
-                replyActions.fixedSize()
+        let model = message.model ?? "Assistant"
+        return VStack(alignment: .leading, spacing: 4) {
+            // The icon buttons already include spacing around their glyphs.
+            HStack(spacing: 10) {
+                Text(model)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+                    .help(model)
+                if message.status != .streaming && (!message.text.isEmpty || canRetry) {
+                    replyActions
+                }
             }
-            if let note = message.note {
+            if message.status != .streaming, let note = message.note {
                 Text(note)
                     .foregroundStyle(message.status == .failed ? Color.orange : Color.secondary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 6)
             }
         }
+        .foregroundStyle(.secondary)
     }
 
     private var replyActions: some View {
-        HStack(spacing: 4) {
+        let isRegenerate = message.status == .complete
+        return HStack(spacing: 4) {
             if !message.text.isEmpty { CopyButton(text: message.text, title: "Copy response") }
             if canRetry {
                 Button(action: retry) {
-                    Text(message.status == .complete ? "Regenerate" : "Retry").padding(.horizontal, 6)
-                        .frame(height: InteractionMetrics.controlSize)
+                    if isRegenerate {
+                        Image(systemName: "arrow.2.circlepath")
+                            .frame(width: InteractionMetrics.controlSize, height: InteractionMetrics.controlSize)
+                    } else {
+                        Text("Retry")
+                            .padding(.horizontal, 6)
+                            .frame(height: InteractionMetrics.controlSize)
+                    }
                 }
                 .buttonStyle(HoverButtonStyle())
-                .help("\(message.status == .complete ? "Regenerate" : "Retry") with \(retryModel)")
+                .accessibilityLabel(isRegenerate ? "Regenerate" : "Retry")
+                .help("\(isRegenerate ? "Regenerate" : "Retry") with \(retryModel)")
+                .fixedSize()
             }
         }
     }

@@ -9,6 +9,8 @@ struct BackendSettingsView: View {
     @State private var originalKey = ""
     @State private var status = ""
     @State private var testing = false
+    @State private var saving = false
+    @State private var saveError: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Form {
@@ -52,15 +54,20 @@ struct BackendSettingsView: View {
                         }
                     }
                 }
-            }.formStyle(.grouped).disabled(testing)
+            }.formStyle(.grouped).disabled(testing || saving)
             HStack {
+                if let saveError {
+                    Text(saveError).foregroundStyle(.orange)
+                }
                 Spacer()
-                Button("Save") {
-                    do { try store.saveSettings(settings, apiKey: originalKey == apiKey ? nil : apiKey); originalKey = apiKey; status = "Saved" }
-                    catch { status = error.localizedDescription }
-                }.keyboardShortcut(.defaultAction).disabled(!store.writable || !store.isRestored || testing)
+                Button("Save") { save() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!store.writable || !store.isRestored || testing || saving)
             }.padding(20)
         }.frame(width: 550, height: 620)
+            .background {
+                SettingsEscapeHandler { window in save(closing: window) }
+            }
             .onAppear { settings = store.state.settings; loadKey() }
             .onChange(of: store.isRestored) { _, ready in
                 if ready { settings = store.state.settings; loadKey() }
@@ -68,6 +75,24 @@ struct BackendSettingsView: View {
             .onChange(of: settings.baseURL) { _, _ in loadKey(); status = "" }
             .onChange(of: settings.model) { _, _ in status = "" }
     }
+
+    private func save(closing window: NSWindow? = nil) {
+        guard !saving else { return }
+        saving = true
+        saveError = nil
+        Task {
+            defer { saving = false }
+            do {
+                try await store.saveSettings(settings, apiKey: originalKey == apiKey ? nil : apiKey)
+                originalKey = apiKey
+                status = "Saved"
+                if let window, window.isVisible { window.performClose(nil) }
+            } catch {
+                saveError = error.localizedDescription
+            }
+        }
+    }
+
     private func loadKey() {
         var connection = settings
         connection.model = "key lookup"
@@ -89,5 +114,38 @@ struct BackendSettingsView: View {
                 status = models.contains { $0["id"] as? String == settings.model } ? "Connected · model found" : "Connected · check the model ID"
             } catch { status = error.localizedDescription }
         }
+    }
+}
+
+private struct SettingsEscapeHandler: NSViewRepresentable {
+    let onEscape: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        let coordinator = context.coordinator
+        // Handle Escape before a focused text field can consume it.
+        coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak view, weak coordinator] event in
+            guard event.keyCode == 53,
+                  event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+                  let window = view?.window, event.window === window else { return event }
+            if !event.isARepeat { coordinator?.onEscape?(window) }
+            return nil
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onEscape = onEscape
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        if let monitor = coordinator.monitor { NSEvent.removeMonitor(monitor) }
+    }
+
+    final class Coordinator {
+        var onEscape: ((NSWindow) -> Void)?
+        var monitor: Any?
     }
 }

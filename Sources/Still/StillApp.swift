@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 enum StillTypography {
-    static let minimum = Font.system(size: 14)
+    static let minimum = Font.system(size: 13)
 }
 
 @main struct StillApp: App {
